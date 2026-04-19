@@ -1757,7 +1757,7 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Build and run the bot."""
-    app = Application.builder().token(config.BOT_TOKEN).build()
+    app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     # ── Conversation: Kingdom Creation ────────────────────────
     create_conv = ConversationHandler(
