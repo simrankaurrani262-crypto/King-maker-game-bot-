@@ -11,7 +11,7 @@ from bot.models import get_db, Kingdom, User, Alliance
 from bot.services.economy import EconomyService
 
 
-class GameDataService:
+class GameData:
     """Provides safe, efficient game data queries with eager relationship loading."""
 
     @staticmethod
