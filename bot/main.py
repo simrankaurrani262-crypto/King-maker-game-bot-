@@ -18,7 +18,7 @@ from bot.models import (
     get_db, User, Kingdom, Army, Building, Battle,
     SpyReport, WorldEvent, Bounty, NotificationPref,
 )
-from bot.services.game_data import GameDataService
+from bot.services.game_data import GameData
 from bot.services.economy import EconomyService
 from bot.utils.keyboards import (
     dashboard_keyboard, building_action_keyboard, building_menu_keyboard,
