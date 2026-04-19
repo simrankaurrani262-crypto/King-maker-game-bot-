@@ -1,422 +1,545 @@
-import random
+"""
+King-Maker Bot — Elite Edition
+Mini-Games Handlers — Dice, Lucky Spin, Kingdom Quiz, Black Market
+"""
+
+import json, random
 from datetime import datetime, timedelta
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from bot.models import get_db, Kingdom, WorldEvent
-from bot.services.game_data import GameData
+
+from bot.config import config
+from bot.models import get_db, Kingdom
+from bot.services.economy import EconomyService
 from bot.utils.keyboards import (
     games_menu_keyboard, dice_keyboard, spin_keyboard,
-    black_market_keyboard, back_dashboard_keyboard, decision_keyboard
-)
-from bot.utils.constants import (
-    DICE_COOLDOWN_HOURS, SPIN_COOLDOWN_HOURS, QUIZ_COOLDOWN_HOURS,
-    BLACK_MARKET_ITEMS, BLACK_MARKET_REFRESH_HOURS,
-    SPIN_WHEEL_ITEMS, QUIZ_QUESTIONS, DECISION_EVENTS,
-    SURVIVAL_WAVES
+    quiz_keyboard, black_market_keyboard, back_dashboard_keyboard,
 )
 
 
-async def show_games_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show mini-games menu"""
-    query = update.callback_query
-    
-    text = "🎲 **MINI-GAMES**\n"
-    text += "━━━━━━━━━━━━━━\n\n"
-    text += "🎲 **Dice Game** — Test your luck!\n"
-    text += "🎰 **Lucky Spin** — Free rewards!\n"
-    text += "🧠 **Kingdom Quiz** — Test your knowledge!\n"
-    text += "⚔️ **Survival Mode** — Co-op PvE!\n\n"
-    text += "🏪 **Black Market** — Secret deals!"
-    
-    await query.edit_message_text(text, reply_markup=games_menu_keyboard())
+def render_bar(value: int, maximum: int, width: int = 12, fill: str = "█", empty: str = "░") -> str:
+    """Render a horizontal progress bar."""
+    if maximum <= 0:
+        return empty * width
+    ratio = min(value / maximum, 1.0)
+    filled = int(round(ratio * width))
+    return fill * filled + empty * (width - filled)
 
 
-async def handle_games_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle games menu callbacks"""
+# ═══════════════════════════════════════════════════════════════════
+#  DICE GAME
+# ═══════════════════════════════════════════════════════════════════
+
+DICE_FACES = {1: "⚀", 2: "⚁", 3: "⚂", 4: "⚃", 5: "⚄", 6: "⚅"}
+
+
+async def show_games_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show the games menu."""
     query = update.callback_query
-    await query.answer()
-    
-    user_id = query.from_user.id
+    await query.edit_message_text(
+        "🎮 **MINI-GAMES**\n\n"
+        "Entertainment ke liye games khelo!\n"
+        "Aur extra rewards jeeto!\n\n"
+        "💰 Har game mein Gold jeet sakte ho!",
+        parse_mode="Markdown",
+        reply_markup=games_menu_keyboard(),
+    )
+
+
+async def dice_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show dice game with betting options."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    with get_db() as db:
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if not k:
+            return await query.edit_message_text("❌ Error!")
+
+    await query.edit_message_text(
+        f"🎲 **DICE GAME**\n\n"
+        f"💰 Balance: {k.gold}\n\n"
+        f"Aapka dice vs Bot ka dice!\n"
+        f"Jiska number zyada, woh jeeta!\n\n"
+        f"Bet amount select karo:",
+        parse_mode="Markdown",
+        reply_markup=dice_keyboard(),
+    )
+
+
+async def handle_dice_bet(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle dice roll with visual animation."""
+    query = update.callback_query
     data = query.data
-    
-    if data == "menu_games":
-        await show_games_menu(update, context, user_id)
-    
-    elif data == "game_dice":
-        await show_dice_game(update, context, user_id)
-    
-    elif data.startswith("dice_bet:"):
-        bet = int(data.split(":")[1])
-        await roll_dice(update, context, user_id, bet)
-    
-    elif data == "game_spin":
-        await show_spin_wheel(update, context, user_id)
-    
-    elif data == "spin_wheel":
-        await spin_wheel(update, context, user_id)
-    
-    elif data == "game_quiz":
-        await show_quiz(update, context, user_id)
-    
-    elif data.startswith("quiz_answer:"):
-        parts = data.split(":")
-        q_idx = int(parts[1])
-        answer = int(parts[2])
-        await check_quiz_answer(update, context, user_id, q_idx, answer)
-    
-    elif data == "game_survival":
-        await show_survival_mode(update, context, user_id)
-    
-    elif data == "game_market":
-        await show_black_market(update, context, user_id)
-    
-    elif data == "market_buy":
-        await buy_market_item(update, context, user_id)
-    
-    elif data.startswith("decision:"):
-        parts = data.split(":")
-        event_id = parts[1]
-        choice = parts[2]
-        await resolve_decision(update, context, user_id, event_id, choice)
+    user_id = update.effective_user.id
 
+    bet = int(data.split(":")[1])
 
-async def show_dice_game(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show dice game"""
-    query = update.callback_query
-    
-    # Check cooldown
-    cooldown = GameData.get_cooldown(user_id, "dice")
-    cooldown_text = ""
-    if cooldown and cooldown > datetime.utcnow():
-        remaining = cooldown - datetime.utcnow()
-        mins = int(remaining.total_seconds() // 60)
-        cooldown_text = f"\n⏳ Cooldown: {mins}m\n"
-    
-    text = "🎲 **DICE GAME**\n"
-    text += "━━━━━━━━━━━━━━\n"
-    text += cooldown_text
-    text += "\n🎲 Roll the dice!\n\n"
-    text += "1-2: ❌ Lose your bet\n"
-    text += "3-4: ➡️ Keep your bet\n"
-    text += "5: 💰 Win 2x your bet\n"
-    text += "6: 🔥 Win 5x your bet!\n"
-    text += "\nCooldown: 4h per roll"
-    
-    await query.edit_message_text(text, reply_markup=dice_keyboard())
-
-
-async def roll_dice(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, bet: int):
-    """Roll the dice"""
-    query = update.callback_query
-    
-    # Check cooldown
-    cooldown = GameData.get_cooldown(user_id, "dice")
-    if cooldown and cooldown > datetime.utcnow():
-        remaining = cooldown - datetime.utcnow()
-        mins = int(remaining.total_seconds() // 60)
-        await query.answer(f"⏳ {mins}m cooldown left!")
-        return
-    
     with get_db() as db:
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return
-        
-        if kingdom.gold < bet:
-            await query.answer(f"❌ {bet} Gold chahiye!")
-            return
-        
-        # Set cooldown
-        GameData.set_cooldown(user_id, "dice", DICE_COOLDOWN_HOURS * 60)
-        
-        # Roll
-        roll = random.randint(1, 6)
-        
-        if roll <= 2:
-            kingdom.gold -= bet
-            result = f"❌ **{roll}** — You lost {bet} Gold!"
-        elif roll <= 4:
-            result = f"➡️ **{roll}** — Bet returned!"
-        elif roll == 5:
-            winnings = bet * 2
-            kingdom.gold += winnings
-            result = f"💰 **{roll}** — You won {winnings} Gold!"
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if not k:
+            return await query.edit_message_text("❌ Error!")
+
+        if k.gold < bet:
+            return await query.edit_message_text(
+                f"💰 **Insufficient Gold!**\n\n"
+                f"Bet: {bet}\n"
+                f"Balance: {k.gold}\n\n"
+                f"Kam bet karo ya gold collect karo!",
+                parse_mode="Markdown",
+                reply_markup=dice_keyboard(),
+            )
+
+        # Roll with "animation"
+        player_roll = random.randint(1, 6)
+        bot_roll = random.randint(1, 6)
+
+        if player_roll > bot_roll:
+            winnings = bet
+            k.gold += winnings
+            result_emoji = "🎉"
+            result_text = f"**YOU WIN!** +{winnings} Gold"
+            result_color = "✅"
+        elif player_roll < bot_roll:
+            k.gold -= bet
+            result_emoji = "😢"
+            result_text = f"**You Lose!** -{bet} Gold"
+            result_color = "❌"
         else:
-            winnings = bet * 5
-            kingdom.gold += winnings
-            result = f"🔥 **{roll}** — JACKPOT! You won {winnings} Gold!"
-        
+            result_emoji = "🤝"
+            result_text = "**DRAW!** Koi loss nahi!"
+            result_color = "⚖️"
+
         db.commit()
-    
-    text = f"🎲 **DICE ROLLED: {roll}**\n"
-    text += "━━━━━━━━━━━━━━\n\n"
-    text += f"{result}\n\n"
-    text += f"💰 Gold: {kingdom.gold:,}"
-    
-    await query.edit_message_text(text, reply_markup=dice_keyboard())
 
+        # Visual comparison bar
+        bar = render_bar(player_roll, 6, 6)
+        bot_bar = render_bar(bot_roll, 6, 6)
 
-async def show_spin_wheel(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show lucky spin"""
-    query = update.callback_query
-    
-    cooldown = GameData.get_cooldown(user_id, "spin")
-    cooldown_text = ""
-    if cooldown and cooldown > datetime.utcnow():
-        remaining = cooldown - datetime.utcnow()
-        mins = int(remaining.total_seconds() // 60)
-        cooldown_text = f"⏳ Cooldown: {mins}m\n"
-    
-    text = "🎰 **LUCKY SPIN**\n"
-    text += "━━━━━━━━━━━━━━\n"
-    text += cooldown_text
-    text += "\n💎 50 Gems    | 💰 5000 Gold\n"
-    text += "🍖 2000 Food  | ⚡ Full Energy\n"
-    text += "🛡 12h Shield | 🎁 Mystery Box\n"
-    text += "❌ Nothing\n"
-    text += "\nFree every 8h!"
-    
-    await query.edit_message_text(text, reply_markup=spin_keyboard())
-
-
-async def spin_wheel(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Spin the wheel"""
-    query = update.callback_query
-    
-    cooldown = GameData.get_cooldown(user_id, "spin")
-    if cooldown and cooldown > datetime.utcnow():
-        remaining = cooldown - datetime.utcnow()
-        mins = int(remaining.total_seconds() // 60)
-        await query.answer(f"⏳ {mins}m cooldown left!")
-        return
-    
-    # Weighted random selection
-    roll = random.random()
-    cumulative = 0
-    selected = None
-    
-    for item in SPIN_WHEEL_ITEMS:
-        cumulative += item["chance"]
-        if roll <= cumulative:
-            selected = item
-            break
-    
-    if not selected:
-        selected = SPIN_WHEEL_ITEMS[-1]
-    
-    with get_db() as db:
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return
-        
-        GameData.set_cooldown(user_id, "spin", SPIN_COOLDOWN_HOURS * 60)
-        
-        result_text = f"🎰 **Result: {selected['name']}**\n"
-        
-        if selected.get("gold"):
-            kingdom.gold += selected["gold"]
-            result_text += f"💰 +{selected['gold']:,} Gold!\n"
-        elif selected.get("food"):
-            kingdom.food += selected["food"]
-            result_text += f"🍖 +{selected['food']:,} Food!\n"
-        elif selected.get("gems"):
-            kingdom.gems += selected["gems"]
-            result_text += f"💎 +{selected['gems']} Gems!\n"
-        elif selected.get("energy"):
-            kingdom.energy = min(kingdom.max_energy, kingdom.energy + selected["energy"])
-            result_text += f"⚡ Energy restored!\n"
-        elif selected.get("shield_hours"):
-            kingdom.shield_expires = datetime.utcnow() + timedelta(hours=selected["shield_hours"])
-            result_text += f"🛡 +{selected['shield_hours']}h Shield!\n"
-        elif selected.get("mystery"):
-            mystery_gold = random.randint(100, 5000)
-            kingdom.gold += mystery_gold
-            result_text += f"🎁 Mystery Box: +{mystery_gold:,} Gold!\n"
-        else:
-            result_text += "Better luck next time!\n"
-        
-        db.commit()
-    
-    result_text += f"\n💰 Gold: {kingdom.gold:,}"
-    
-    await query.edit_message_text(result_text, reply_markup=spin_keyboard())
-
-
-async def show_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show quiz question"""
-    query = update.callback_query
-    
-    cooldown = GameData.get_cooldown(user_id, "quiz")
-    if cooldown and cooldown > datetime.utcnow():
-        remaining = cooldown - datetime.utcnow()
-        mins = int(remaining.total_seconds() // 60)
-        await query.answer(f"⏳ {mins}m cooldown left!")
-        return
-    
-    # Pick random question
-    question = random.choice(QUIZ_QUESTIONS)
-    q_idx = QUIZ_QUESTIONS.index(question)
-    
-    from bot.utils.keyboards import quiz_keyboard
-    
-    text = "🧠 **KINGDOM QUIZ**\n"
-    text += "━━━━━━━━━━━━━━\n\n"
-    text += f"❓ {question['question']}\n\n"
-    text += "Sahi jawab = 💰 200 Gold + ⭐ 50 XP"
-    
     await query.edit_message_text(
-        text,
-        reply_markup=quiz_keyboard(q_idx, question["options"])
+        f"🎲 **DICE ROLL**\n\n"
+        f"```\n"
+        f"You:   {DICE_FACES[player_roll]} ({player_roll})  {bar}\n"
+        f"Bot:   {DICE_FACES[bot_roll]} ({bot_roll})  {bot_bar}\n"
+        f"```\n"
+        f"{result_emoji} {result_color} {result_text}\n\n"
+        f"💰 Balance: **{k.gold}** Gold",
+        parse_mode="Markdown",
+        reply_markup=dice_keyboard(),
     )
 
 
-async def check_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, q_idx: int, answer: int):
-    """Check quiz answer"""
+# ═══════════════════════════════════════════════════════════════════
+#  LUCKY SPIN
+# ═══════════════════════════════════════════════════════════════════
+
+SPIN_PRIZES = [
+    ("💰 100 Gold", 100, "gold_add", 20),
+    ("💰 200 Gold", 200, "gold_add", 12),
+    ("💰 500 Gold", 500, "gold_add", 5),
+    ("🍖 50 Food", 50, "food_add", 15),
+    ("🍖 150 Food", 150, "food_add", 10),
+    ("⚡ 1 Energy", 1, "energy_add", 10),
+    ("🏆 50 XP", 50, "xp_add", 15),
+    ("❌ Nothing", 0, "none", 8),
+    ("💎 1000 Gold", 1000, "gold_add", 3),
+    ("🎁 Mystery Box", 0, "mystery", 2),
+]
+
+
+async def lucky_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show lucky spin wheel."""
     query = update.callback_query
-    
-    if q_idx < 0 or q_idx >= len(QUIZ_QUESTIONS):
-        return
-    
-    question = QUIZ_QUESTIONS[q_idx]
-    correct = answer == question["correct"]
-    
+    user_id = update.effective_user.id
+
     with get_db() as db:
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return
-        
-        GameData.set_cooldown(user_id, "quiz", QUIZ_COOLDOWN_HOURS * 60)
-        
-        if correct:
-            kingdom.gold += 200
-            kingdom.xp += 50
-            result = "✅ **Sahi jawab!**\n💰 +200 Gold\n⭐ +50 XP"
-        else:
-            correct_answer = question["options"][question["correct"]]
-            result = f"❌ **Galat jawab!**\nSahi answer tha: **{correct_answer}**\nKoi baat nahi, try again!"
-        
-        db.commit()
-    
-    text = f"🧠 **QUIZ RESULT**\n"
-    text += "━━━━━━━━━━━━━━\n\n"
-    text += f"{result}\n\n"
-    text += f"💰 Gold: {kingdom.gold:,}"
-    
-    await query.edit_message_text(text, reply_markup=back_dashboard_keyboard())
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if not k:
+            return await query.edit_message_text("❌ Error!")
 
+    if k.gold < 50:
+        return await query.edit_message_text(
+            f"💰 **50 Gold** chahiye spin ke liye!\n"
+            f"Balance: {k.gold}",
+            reply_markup=games_menu_keyboard(),
+        )
 
-async def show_survival_mode(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show survival mode"""
-    query = update.callback_query
-    
-    text = "⚔️ **SURVIVAL MODE**\n"
-    text += "━━━━━━━━━━━━━━\n\n"
-    text += "Alliance members ke saath mil kar\n"
-    text += "waves of enemies ko defeat karo!\n\n"
-    
-    for wave in SURVIVAL_WAVES:
-        text += f"Wave {wave['wave']}: {wave['enemies']} {wave['type']} — 💰 {wave['reward_gold']:,}\n"
-    
-    text += "\n🚧 **Coming Soon!**\n"
-    text += "Survival mode abhi development mein hai!"
-    
-    await query.edit_message_text(text, reply_markup=back_dashboard_keyboard())
-
-
-async def show_black_market(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show black market"""
-    query = update.callback_query
-    
-    # Generate items
-    items = random.sample(BLACK_MARKET_ITEMS, k=min(4, len(BLACK_MARKET_ITEMS)))
-    
-    text = "🏪 **BLACK MARKET**\n"
-    text += "━━━━━━━━━━━━━━\n"
-    text += "🌙 Secret deals... shhh!\n\n"
-    
-    for i, item in enumerate(items):
-        text += f"{i+1}. {item['name']} — 💎 {item['price_gems']} ({item['stock']} left)\n"
-    
-    text += f"\n⏳ Refresh: har {BLACK_MARKET_REFRESH_HOURS} hours"
-    
-    await query.edit_message_text(text, reply_markup=black_market_keyboard())
-
-
-async def buy_market_item(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Buy from black market"""
-    query = update.callback_query
-    
-    items = random.sample(BLACK_MARKET_ITEMS, k=4)
-    
-    with get_db() as db:
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return
-        
-        # Buy first available item (simplified)
-        item = items[0]
-        if kingdom.gems < item["price_gems"]:
-            await query.answer(f"❌ {item['price_gems']} Gems chahiye!")
-            return
-        
-        kingdom.gems -= item["price_gems"]
-        
-        # Apply effect
-        if item["effect"] == "refill_energy":
-            kingdom.energy = kingdom.max_energy
-            result = "⚡ Energy refilled!"
-        elif item["effect"] == "extend_shield":
-            kingdom.shield_expires = datetime.utcnow() + timedelta(hours=24)
-            result = "🛡 24h Shield activated!"
-        elif item["effect"] == "add_gold":
-            kingdom.gold += 10000
-            result = "💰 +10,000 Gold!"
-        else:
-            result = f"{item['name']} khareeda!"
-        
-        db.commit()
-    
-    await query.answer("✅ Item khareeda!")
     await query.edit_message_text(
-        f"🏪 **Purchase Successful!**\n\n{result}\n\n💎 Gems left: {kingdom.gems}",
-        reply_markup=black_market_keyboard()
+        f"🎰 **LUCKY SPIN**\n\n"
+        f"Cost: 50 Gold/spin\n"
+        f"💰 Balance: {k.gold}\n\n"
+        f"🎁 Prizes: Gold, Food, Energy, XP\n"
+        f"💎 Jackpot: 1000 Gold!\n\n"
+        f"**SPIN** karo!",
+        parse_mode="Markdown",
+        reply_markup=spin_keyboard(),
     )
 
 
-async def resolve_decision(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, event_id: str, choice: str):
-    """Resolve a decision event"""
+async def handle_spin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process lucky spin with visual wheel."""
     query = update.callback_query
-    
-    event = None
-    for e in DECISION_EVENTS:
-        if e["id"] == event_id:
-            event = e
-            break
-    
-    if not event:
-        return
-    
-    outcome = event["outcomes"].get(choice, {"message": "Kuch nahi hua!"})
-    
+    user_id = update.effective_user.id
+
     with get_db() as db:
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return
-        
-        if "gold" in outcome:
-            kingdom.gold += outcome["gold"]
-        if "infantry" in outcome:
-            if kingdom.army:
-                kingdom.army.infantry += outcome["infantry"]
-        
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if not k:
+            return await query.edit_message_text("❌ Error!")
+
+        if k.gold < 50:
+            return await query.edit_message_text(
+                f"💰 50 Gold chahiye!\nBalance: {k.gold}",
+                reply_markup=games_menu_keyboard(),
+            )
+
+        k.gold -= 50
+
+        # Weighted random selection
+        weights = [p[3] for p in SPIN_PRIZES]
+        prize = random.choices(SPIN_PRIZES, weights=weights, k=1)[0]
+        prize_name, amount, ptype, _ = prize
+
+        bonus_text = ""
+        if ptype == "gold_add":
+            k.gold += amount
+            bonus_text = f"💰 +{amount} Gold"
+        elif ptype == "food_add":
+            k.food += amount
+            bonus_text = f"🍖 +{amount} Food"
+        elif ptype == "energy_add":
+            old_energy = k.energy
+            k.energy = min(config.MAX_ENERGY, k.energy + amount)
+            gained = k.energy - old_energy
+            bonus_text = f"⚡ +{gained} Energy"
+        elif ptype == "xp_add":
+            k.xp += amount
+            bonus_text = f"📈 +{amount} XP"
+        elif ptype == "mystery":
+            mystery_prizes = [
+                ("💰 200 Gold", 200, "gold"), ("🍖 300 Food", 300, "food"),
+                ("⚡ 2 Energy", 2, "energy"), ("📈 100 XP", 100, "xp"),
+            ]
+            m_prize = random.choice(mystery_prizes)
+            m_name, m_val, m_type = m_prize
+            if m_type == "gold":
+                k.gold += m_val
+            elif m_type == "food":
+                k.food += m_val
+            elif m_type == "energy":
+                k.energy = min(config.MAX_ENERGY, k.energy + m_val)
+            elif m_type == "xp":
+                k.xp += m_val
+            prize_name = f"🎁 Mystery: {m_name}"
+            bonus_text = f"Surprise! {m_name}"
+
         db.commit()
-    
-    message = outcome.get("message", "Kuch nahi hua!")
-    
-    await query.edit_message_text(
-        f"🎲 **Decision Result**\n"
-        f"━━━━━━━━━━━━━━\n\n"
-        f"{message}\n\n"
-        f"💰 Gold: {kingdom.gold:,}",
-        reply_markup=back_dashboard_keyboard()
+
+    # Visual wheel representation
+    wheel_visual = (
+        "```\n"
+        "    ╔═══════════╗\n"
+        "    ║   🎰   ║\n"
+        "    ║  SPIN  ║\n"
+        "    ╚═══════════╝\n"
+        "```"
     )
+
+    await query.edit_message_text(
+        f"{wheel_visual}\n"
+        f"🎰 **LUCKY SPIN RESULT**\n\n"
+        f"🎁 **{prize_name}**\n"
+        f"{bonus_text}\n\n"
+        f"📊 Updated Balance:\n"
+        f"💰 Gold: {k.gold}\n"
+        f"🍖 Food: {k.food}\n"
+        f"⚡ Energy: {k.energy}/{config.MAX_ENERGY}",
+        parse_mode="Markdown",
+        reply_markup=spin_keyboard(),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  KINGDOM QUIZ
+# ═══════════════════════════════════════════════════════════════════
+
+QUIZ_QUESTIONS = [
+    {
+        "q": "Medieval warfare mein sabse powerful unit kaun thi?",
+        "opts": ["Infantry (Foot soldiers)", "Cavalry (Horse riders)", "Archers", "Siege weapons"],
+        "ans": 1,
+        "fact": "Cavalry ne speed aur power se battles jeete!",
+    },
+    {
+        "q": "Castle defense ke liye sabse important building kaunsa hai?",
+        "opts": ["Farm", "Wall", "Market", "Barracks"],
+        "ans": 1,
+        "fact": "Wall se attackers ko roka ja sakta hai!",
+    },
+    {
+        "q": "Resources collect karne ka sabse fast tareeka kya hai?",
+        "opts": ["Enemy attack", "Building collect", "Market trade", "Dice game"],
+        "ans": 1,
+        "fact": "Buildings se regular production hoti hai!",
+    },
+    {
+        "q": "Spy mission ka cooldown kitna hota hai?",
+        "opts": ["1 minute", "5 minutes", "10 minutes", "30 minutes"],
+        "ans": 1,
+        "fact": "5 min cooldown — use wisely!",
+    },
+    {
+        "q": "Level 10 Kingdom ke liye approximately kitni XP chahiye?",
+        "opts": ["~500 XP", "~1500 XP", "~3000 XP", "~5000 XP"],
+        "ans": 2,
+        "fact": "XP requirement exponential hoti hai!",
+    },
+    {
+        "q": "Food shortage pe kya hota hai?",
+        "opts": ["Nothing", "Army desertion", "Gold loss", "Building damage"],
+        "ans": 1,
+        "fact": "Bhooki army bhaag jati hai! Food collect karo!",
+    },
+    {
+        "q": "Alliance ka sabse bada benefit kya hai?",
+        "opts": ["Free gold", "Team protection", "Extra energy", "No attacks"],
+        "ans": 1,
+        "fact": "Alliance se combined power aur protection milta hai!",
+    },
+]
+
+
+async def kingdom_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the kingdom quiz."""
+    query = update.callback_query
+    context.user_data["quiz_idx"] = 0
+    context.user_data["quiz_score"] = 0
+    context.user_data["quiz_questions"] = random.sample(QUIZ_QUESTIONS, min(5, len(QUIZ_QUESTIONS)))
+
+    await _show_quiz_question(update, context)
+
+
+async def _show_quiz_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Display current quiz question with progress."""
+    query = update.callback_query
+    idx = context.user_data.get("quiz_idx", 0)
+    questions = context.user_data.get("quiz_questions", [])
+    score = context.user_data.get("quiz_score", 0)
+
+    if idx >= len(questions):
+        return await _quiz_complete(update, context)
+
+    q = questions[idx]
+    progress_bar = render_bar(idx, len(questions), 8)
+
+    await query.edit_message_text(
+        f"🧠 **Kingdom Quiz**  {idx + 1}/{len(questions)}\n"
+        f"{progress_bar}\n"
+        f"Score: {score} ✅\n\n"
+        f"**{idx + 1}. {q['q']}**",
+        parse_mode="Markdown",
+        reply_markup=quiz_keyboard(idx, q["opts"]),
+    )
+
+
+async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Process quiz answer and show feedback."""
+    query = update.callback_query
+    data = query.data
+    parts = data.split(":")
+    q_idx = int(parts[1])
+    ans = int(parts[2])
+
+    questions = context.user_data.get("quiz_questions", [])
+    if q_idx >= len(questions):
+        return await query.answer("Quiz already completed!")
+
+    q = questions[q_idx]
+    correct = q["ans"]
+    is_correct = (ans == correct)
+
+    if is_correct:
+        context.user_data["quiz_score"] = context.user_data.get("quiz_score", 0) + 1
+        feedback = f"✅ **Correct!**\n\n💡 {q['fact']}"
+    else:
+        correct_answer = q["opts"][correct]
+        feedback = f"❌ **Wrong!**\nCorrect: **{correct_answer}**\n\n💡 {q['fact']}"
+
+    await query.answer(feedback, show_alert=True)
+
+    # Move to next question
+    context.user_data["quiz_idx"] = q_idx + 1
+    await _show_quiz_question(update, context)
+
+
+async def _quiz_complete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show quiz completion with rewards."""
+    query = update.callback_query
+    score = context.user_data.get("quiz_score", 0)
+    total = len(context.user_data.get("quiz_questions", []))
+    bonus = score * 25
+    xp_bonus = score * 10
+
+    user_id = update.effective_user.id
+    with get_db() as db:
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if k:
+            k.gold += bonus
+            k.xp += xp_bonus
+            db.commit()
+
+    # Performance rating
+    ratio = score / max(total, 1)
+    if ratio == 1.0:
+        rating = "🏆 PERFECT!"
+    elif ratio >= 0.8:
+        rating = "⭐ EXCELLENT!"
+    elif ratio >= 0.6:
+        rating = "👍 GOOD!"
+    elif ratio >= 0.4:
+        rating = "📚 NEEDS PRACTICE"
+    else:
+        rating = "📖 STUDY MORE!"
+
+    bar = render_bar(score, total, 10)
+
+    await query.edit_message_text(
+        f"🧠 **QUIZ COMPLETE!**\n\n"
+        f"{bar}\n"
+        f"Score: **{score}/{total}**\n"
+        f"Rating: {rating}\n\n"
+        f"🎁 Rewards:\n"
+        f"💰 +{bonus} Gold\n"
+        f"📈 +{xp_bonus} XP\n\n"
+        f"💰 Balance: {k.gold if k else 'N/A'}",
+        parse_mode="Markdown",
+        reply_markup=games_menu_keyboard(),
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  BLACK MARKET
+# ═══════════════════════════════════════════════════════════════════
+
+MARKET_ITEMS = [
+    {"id": "sword1", "name": "⚔️ Iron Sword", "cost": 100, "attack": 10, "desc": "+10 attack power"},
+    {"id": "shield1", "name": "🛡 Wooden Shield", "cost": 80, "defense": 10, "desc": "+10 defense power"},
+    {"id": "potion1", "name": "🧪 Health Potion", "cost": 50, "heal": 20, "desc": "Restore army units"},
+    {"id": "scroll1", "name": "📜 XP Scroll", "cost": 150, "xp": 50, "desc": "+50 instant XP"},
+    {"id": "ring1", "name": "💍 Gold Ring", "cost": 200, "gold_bonus": 0.1, "desc": "+10% gold production"},
+    {"id": "armor1", "name": "🦺 Chain Armor", "cost": 120, "defense": 15, "desc": "+15 defense power"},
+    {"id": "axe1", "name": "🪓 Battle Axe", "cost": 130, "attack": 15, "desc": "+15 attack power"},
+    {"id": "boots1", "name": "👢 Swift Boots", "cost": 90, "speed": 10, "desc": "+10% attack speed"},
+]
+
+
+async def black_market(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show black market with proper item selection."""
+    query = update.callback_query
+    user_id = update.effective_user.id
+
+    # Select 4 random items and store them for consistent purchase
+    items = random.sample(MARKET_ITEMS, min(4, len(MARKET_ITEMS)))
+    context.user_data["market_items"] = items
+
+    lines = [
+        "🖤 **BLACK MARKET**\n",
+        "*Secret deals... Limited time!*\n",
+        f"💰 Your Gold: Loading...\n",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    buttons = []
+    for i, item in enumerate(items, 1):
+        lines.append(f"{i}. {item['name']}")
+        lines.append(f"   💰 {item['cost']} | {item['desc']}")
+        buttons.append([InlineKeyboardButton(
+            f"Buy {item['name']} — 💰{item['cost']}",
+            callback_data=f"market_buy:{i - 1}",
+        )])
+
+    buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="market_refresh")])
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_games")])
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def handle_market_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle black market item purchase with stored items."""
+    query = update.callback_query
+    data = query.data
+    user_id = update.effective_user.id
+    item_idx = int(data.split(":")[1])
+
+    # Get stored items
+    items = context.user_data.get("market_items", [])
+    if not items or item_idx >= len(items):
+        return await query.edit_message_text(
+            "❌ Items expired!\nMarket refresh karo.",
+            reply_markup=black_market_keyboard(),
+        )
+
+    item = items[item_idx]
+
+    with get_db() as db:
+        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        if not k:
+            return await query.edit_message_text("❌ Error!")
+
+        if k.gold < item["cost"]:
+            return await query.edit_message_text(
+                f"💰 **{item['cost']} Gold** chahiye!\n"
+                f"Balance: {k.gold}\n\n"
+                f"Aur gold collect karo!",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 Market", callback_data="market_refresh")],
+                ]),
+            )
+
+        # Process purchase
+        k.gold -= item["cost"]
+        effects = []
+
+        if "attack" in item and k.army:
+            k.army.infantry = max(0, k.army.infantry + 2)
+            effects.append(f"⚔️ +{item['attack']} attack (infantry +2)")
+        if "defense" in item:
+            effects.append(f"🛡 +{item['defense']} defense")
+        if "heal" in item and k.army:
+            k.army.infantry = max(0, k.army.infantry + 5)
+            effects.append(f"🧪 Army restored (+5 units)")
+        if "xp" in item:
+            k.xp += item["xp"]
+            effects.append(f"📈 +{item['xp']} XP")
+        if "gold_bonus" in item:
+            k.gold += int(item["cost"] * 0.5)
+            effects.append(f"💰 Bonus: +{int(item['cost'] * 0.5)} Gold")
+        if "speed" in item:
+            effects.append(f"👢 +{item['speed']}% speed boost")
+
+        db.commit()
+
+    effects_text = "\n".join(f"  {e}" for e in effects) if effects else "  Item added to inventory!"
+
+    await query.edit_message_text(
+        f"✅ **Purchase Successful!**\n\n"
+        f"{item['name']}\n"
+        f"💰 Spent: {item['cost']}\n\n"
+        f"📊 Effects:\n{effects_text}\n\n"
+        f"💰 Remaining: {k.gold} Gold",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🖤 Back to Market", callback_data="market_refresh")],
+            [InlineKeyboardButton("🔙 Games Menu", callback_data="menu_games")],
+        ]),
+    )
+
+
+async def handle_market_refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Refresh black market items."""
+    return await black_market(update, context)
