@@ -16,7 +16,7 @@ from telegram.ext import (
 from bot.config import config
 from bot.models import (
     get_db, User, Kingdom, Army, Building, Battle,
-    SpyReport, WorldEvent, Bounty, NotificationPreference,
+    SpyReport, WorldEvent, Bounty, NotificationPref,
 )
 from bot.services.game_data import GameDataService
 from bot.services.economy import EconomyService
@@ -1336,10 +1336,10 @@ async def route_settings_detail(update: Update, context: ContextTypes.DEFAULT_TY
     data = query.data
     user_id = update.effective_user.id
     with get_db() as db:
-        prefs = db.query(NotificationPreference).filter(NotificationPreference.user_id == user_id).first()
+        prefs = db.query(NotificationPref).filter(NotificationPref.user_id == user_id).first()
         if data == "settings_notif":
             if not prefs:
-                prefs = NotificationPreference(user_id=user_id)
+                prefs = NotificationPref(user_id=user_id)
                 db.add(prefs)
                 db.commit()
             await query.edit_message_text(
@@ -1380,9 +1380,9 @@ async def route_toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYP
     if not field:
         return await query.answer("Unknown toggle!")
     with get_db() as db:
-        prefs = db.query(NotificationPreference).filter(NotificationPreference.user_id == user_id).first()
+        prefs = db.query(NotificationPref).filter(NotificationPref.user_id == user_id).first()
         if not prefs:
-            prefs = NotificationPreference(user_id=user_id)
+            prefs = NotificationPref(user_id=user_id)
             db.add(prefs)
         current = getattr(prefs, field, False)
         setattr(prefs, field, not current)
