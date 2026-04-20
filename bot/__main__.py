@@ -40,7 +40,7 @@ def main():
 
     from telegram.ext import Application
 
-    application = Application.builder().token(config.BOT_TOKEN).build()
+    application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
     # Register all handlers
     register_handlers(application)
