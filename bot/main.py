@@ -394,7 +394,7 @@ def main():
     # Build application
     application = (
         Application.builder()
-        .token(config.BOT_TOKEN)
+        .token(config.TELEGRAM_BOT_TOKEN)
         .post_init(on_startup)
         .build()
     )
