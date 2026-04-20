@@ -378,8 +378,8 @@ def main():
     logger.info("🚀 Starting Kingdom Conquest Bot v2.0...")
 
     # Validate config
-    if not config.BOT_TOKEN or config.BOT_TOKEN == "your_bot_token_here":
-        logger.error("❌ BOT_TOKEN not configured! Check your .env file.")
+    if not config.TELEGRAM_BOT_TOKEN or config.TELEGRAM_BOT_TOKEN == "your_bot_token_here":
+        logger.error("❌ TELEGRAM_BOT_TOKEN not configured! Check your .env file.")
         sys.exit(1)
 
     # Initialize database
