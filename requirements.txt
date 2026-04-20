@@ -1,26 +1,2 @@
-# King-Maker Bot — Elite Edition
-# Python Dependencies
-
-# Core Framework
 python-telegram-bot[job-queue]==20.7
-
-# Database ORM
 SQLAlchemy==2.0.27
-
-# Environment Configuration
-python-dotenv>=1.0.0
-
-# Data Processing (for charts/graphs)
-numpy>=1.26.0
-
-# Image Generation (for visual assets)
-Pillow>=10.2.0
-
-# HTTP Client (for API integrations)
-httpx==0.25.2
-
-# Logging & Monitoring
-structlog>=24.1.0
-
-# JSON handling
-orjson>=3.9.0
