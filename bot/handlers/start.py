@@ -1,59 +1,116 @@
+"""
+Start Handler - Kingdom Creation Wizard & Tutorial
+Fixed version with proper imports, error handling, and visual effects.
+"""
+
 import random
-from telegram import Update
+import json
+import logging
+from datetime import datetime, timedelta
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup
+)
 from telegram.ext import ContextTypes
-from bot.models import get_db, User, Kingdom
+
+from bot.models import get_db, User, Kingdom, Building, Army
 from bot.services.game_data import GameData
+from bot.services.combat_engine import CombatEngine
 from bot.utils.keyboards import start_menu_keyboard, trait_selection_keyboard
 from bot.utils.validators import validate_kingdom_name
 from bot.utils.constants import FLAGS, KINGDOM_TRAITS
+from bot.utils.animations import LoadingAnimation, KingdomCreationAnimator
 
+logger = logging.getLogger(__name__)
 
 # User state tracking for multi-step flows
 user_states = {}
 
 
+def get_user_state(user_id: int) -> dict:
+    """Get user state safely"""
+    return user_states.get(user_id, {})
+
+
+def set_user_state(user_id: int, state: dict):
+    """Set user state"""
+    user_states[user_id] = state
+
+
+def clear_user_state(user_id: int):
+    """Clear user state"""
+    user_states.pop(user_id, None)
+
+
+# ─── Main Start Handler ───
+
 async def handler_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /start command - entry point"""
-    user = update.effective_user
-    
-    # Create or get user
-    db_user = GameData.get_or_create_user(
-        telegram_id=user.id,
-        username=user.username,
-        first_name=user.first_name,
-        last_name=user.last_name,
-        language_code=user.language_code,
-    )
-    
-    # Check if banned
-    if db_user.is_banned:
-        await update.message.reply_text(
-            "⛔ Aapko ban kar diya gaya hai.\nContact admin for help."
+    """Handle /start command - entry point with error handling"""
+    try:
+        user = update.effective_user
+        
+        # Create or get user
+        db_user = GameData.get_or_create_user(
+            telegram_id=user.id,
+            username=user.username,
+            first_name=user.first_name,
+            last_name=user.last_name,
+            language_code=user.language_code,
         )
-        return
-    
-    # Check if kingdom exists
-    kingdom = GameData.get_kingdom(user.id)
-    
-    if kingdom:
-        # Existing player - show dashboard
-        from bot.handlers.dashboard import render_dashboard
-        await render_dashboard(update, context, user.id)
-        return
-    
-    # New player - welcome
-    welcome_text = """⚔️ WELCOME TO KINGDOM CONQUEST ⚔️
+        
+        # Check if banned
+        if getattr(db_user, 'is_banned', False):
+            await update.message.reply_text(
+                "⛔ **BANNED**\n"
+                "━━━━━━━━━━━━━━\n"
+                "Aapko ban kar diya gaya hai.\n"
+                "Contact admin for help.",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # Check if kingdom exists
+        kingdom = GameData.get_kingdom(user.id)
+        
+        if kingdom:
+            # Existing player - show dashboard
+            from bot.handlers.dashboard import render_dashboard
+            await render_dashboard(update, context, user.id)
+            return
+        
+        # New player - show welcome with animation
+        welcome_text = """⚔️ **WELCOME TO KINGDOM CONQUEST** ⚔️
+━━━━━━━━━━━━━━
 
 👑 बनो एक महान राजा!
 🏰 अपना Kingdom बनाओ
 ⚔️ दुश्मनों पर हमला करो
-🏆 सबसे शक्तिशाली बनो!"""
-    
-    await update.message.reply_text(
-        welcome_text,
-        reply_markup=start_menu_keyboard()
-    )
+🏆 सबसे शक्तिशाली बनो!
 
+🎮 **Features:**
+📊 Real-time statistics & charts
+🎬 Animated battle sequences
+🌍 Dynamic world events
+🤝 Alliance wars
+🎯 Daily quests & achievements
+
+**Ready to begin your journey?**"""
+        
+        await update.message.reply_text(
+            welcome_text,
+            reply_markup=start_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+    
+    except Exception as e:
+        logger.error(f"Error in handler_start: {e}")
+        await update.message.reply_text(
+            "❌ An error occurred. Please try /start again."
+        )
+
+
+# ─── Callback Handlers ───
 
 async def handle_start_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle start menu button clicks"""
@@ -65,13 +122,26 @@ async def handle_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     if data == "start_game":
         # Start kingdom creation wizard
-        user_states[user_id] = {"step": "kingdom_name"}
+        set_user_state(user_id, {"step": "kingdom_name"})
+        
+        creation_text = """🏰 **KINGDOM CREATION**
+━━━━━━━━━━━━━━
+
+Step 1 of 4: **Kingdom Name**
+
+Apne Kingdom ka naam batao:
+• 3-20 characters
+• Letters, numbers, spaces only
+• Unique naam hona chahiye
+
+Type naam message mein bhejo:"""
+        
         await query.edit_message_text(
-            "🏰 **Kingdom Creation**\n\n"
-            "Apne Kingdom ka naam batao:\n"
-            "(3-20 characters, letters/numbers only)\n\n"
-            "Type naam message mein bhejo:",
-            reply_markup=None
+            creation_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("❌ Cancel", callback_data="cancel_creation")]
+            ]),
+            parse_mode="Markdown"
         )
     
     elif data == "how_to_play":
@@ -108,104 +178,190 @@ async def handle_start_callback(update: Update, context: ContextTypes.DEFAULT_TY
 🤝 Team up with other players
 ⚔️ Fight team wars together
 
+**💡 Pro Tips:**
+🎯 Daily quests complete karo
+🎯 Spy bhejo attack se pehle
+🎯 World events ka fayda uthao
+🎯 Alliance mein rehno for protection
+
 Good luck, King! 👑"""
+        
         await query.edit_message_text(
             help_text,
+            reply_markup=start_menu_keyboard(),
+            parse_mode="Markdown"
+        )
+    
+    elif data == "cancel_creation":
+        clear_user_state(user_id)
+        await query.edit_message_text(
+            "❌ Creation cancelled.\n\nDobara shuru karne ke liye /start type karo.",
             reply_markup=start_menu_keyboard()
         )
 
 
+# ─── Text Input Handler ───
+
 async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle text input during multi-step flows"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    # Check if user is in a flow
-    state = user_states.get(user_id)
-    if not state:
-        # Not in a flow, ignore or show dashboard
-        kingdom = GameData.get_kingdom(user_id)
-        if kingdom:
-            from bot.handlers.dashboard import render_dashboard
-            await render_dashboard(update, context, user_id, new_message=True)
-        return
-    
-    step = state.get("step")
-    
-    if step == "kingdom_name":
-        # Validate name
-        valid, error = validate_kingdom_name(text)
-        if not valid:
-            await update.message.reply_text(f"❌ {error}\n\nDobara try karo:")
+    """Handle text input during multi-step flows with validation"""
+    try:
+        user_id = update.effective_user.id
+        text = update.message.text.strip()
+        
+        # Check if user is in a flow
+        state = get_user_state(user_id)
+        if not state:
+            # Not in a flow, show dashboard if kingdom exists
+            kingdom = GameData.get_kingdom(user_id)
+            if kingdom:
+                from bot.handlers.dashboard import render_dashboard
+                await render_dashboard(update, context, user_id, new_message=True)
+            else:
+                await update.message.reply_text(
+                    "🎮 /start type karo game shuru karne ke liye!"
+                )
             return
         
-        # Check uniqueness
-        with get_db() as db:
-            existing = db.query(Kingdom).filter(Kingdom.name == text).first()
-            if existing:
-                await update.message.reply_text(
-                    "❌ Ye naam pehle se liya gaya hai!\n\nDusra naam try karo:"
-                )
-                return
+        step = state.get("step")
         
-        # Save name, move to flag selection
-        state["kingdom_name"] = text
-        state["step"] = "select_flag"
+        if step == "kingdom_name":
+            await _handle_kingdom_name_step(update, user_id, text)
         
-        # Show flag grid
-        flag_buttons = []
-        row = []
-        for i, flag in enumerate(FLAGS):
-            row.append(f"{flag}")
-            if (i + 1) % 4 == 0:
-                flag_buttons.append(" ".join(row))
-                row = []
-        if row:
-            flag_buttons.append(" ".join(row))
+        elif step == "select_flag":
+            await _handle_flag_selection_step(update, user_id, text, state)
         
-        flag_text = f"🏰 **{text}** — naam approved! ✅\n\n🎌 Ab apna Flag chuno:\n\n"
-        flag_text += "\n".join(flag_buttons)
-        flag_text += "\n\nFlag ke liye number type karo (1-24):"
+        elif step == "select_trait":
+            await _handle_trait_selection_step(update, user_id, text, state)
         
-        state["flags_displayed"] = FLAGS
-        await update.message.reply_text(flag_text)
-    
-    elif step == "select_flag":
-        try:
-            flag_idx = int(text) - 1
-            flags = state.get("flags_displayed", FLAGS)
-            if flag_idx < 0 or flag_idx >= len(flags):
-                await update.message.reply_text(
-                    f"❌ 1 se {len(flags)} ke beech number chuno!"
-                )
-                return
-            
-            selected_flag = flags[flag_idx]
-            state["flag"] = selected_flag
-            state["step"] = "select_trait"
-            
-            # Show trait selection
-            trait_text = f"🏰 **{state['kingdom_name']}** {selected_flag}\n\n"
-            trait_text += "⚡ Apna Kingdom Trait chuno:\n\n"
-            
-            for key, trait in KINGDOM_TRAITS.items():
-                trait_text += f"**{trait['name']}**\n{trait['description']}\n\n"
-            
-            trait_text += "Trait ke liye type karo: aggressive / defensive / rich / balanced"
-            
-            await update.message.reply_text(trait_text)
+        elif step == "alliance_name":
+            # Handled by alliance handler
+            from bot.handlers.alliance import handle_alliance_name_input
+            await handle_alliance_name_input(update, user_id, text)
         
-        except ValueError:
-            await update.message.reply_text("❌ Valid number enter karo!")
-    
-    elif step == "select_trait":
-        trait = text.lower().strip()
-        if trait not in KINGDOM_TRAITS:
+        elif step == "bounty_target":
+            # Handled by bounty system
+            await update.message.reply_text("Bounty system processing...")
+        
+        else:
+            # Unknown step, clear state
+            clear_user_state(user_id)
             await update.message.reply_text(
-                "❌ Valid trait chuno: aggressive / defensive / rich / balanced"
+                "❌ Invalid state. /start se dobara shuru karo."
+            )
+    
+    except Exception as e:
+        logger.error(f"Error in handle_text_input: {e}")
+        await update.message.reply_text(
+            "❌ An error occurred. Please try again with /start"
+        )
+
+
+async def _handle_kingdom_name_step(update: Update, user_id: int, text: str):
+    """Handle kingdom name selection step"""
+    # Validate name
+    valid, error = validate_kingdom_name(text)
+    if not valid:
+        await update.message.reply_text(
+            f"❌ **{error}**\n\nDobara try karo:",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Check uniqueness
+    with get_db() as db:
+        existing = db.query(Kingdom).filter(Kingdom.name == text).first()
+        if existing:
+            await update.message.reply_text(
+                "❌ **Ye naam pehle se liya gaya hai!**\n\nDusra naam try karo:",
+                parse_mode="Markdown"
+            )
+            return
+    
+    # Save name, move to flag selection
+    state = get_user_state(user_id)
+    state["kingdom_name"] = text
+    state["step"] = "select_flag"
+    set_user_state(user_id, state)
+    
+    # Show flag grid with numbers
+    flag_text = f"🏰 **{text}** — naam approved! ✅\n\n"
+    flag_text += "🎌 **Step 2 of 4: Select Flag**\n\n"
+    
+    for i in range(0, len(FLAGS), 4):
+        row = FLAGS[i:i+4]
+        flag_text += " ".join([f"`{i+j+1}`.{f}" for j, f in enumerate(row)])
+        flag_text += "\n"
+    
+    flag_text += "\nFlag ke liye number type karo (1-24):"
+    
+    await update.message.reply_text(
+        flag_text,
+        parse_mode="Markdown"
+    )
+
+
+async def _handle_flag_selection_step(update: Update, user_id: int, text: str, state: dict):
+    """Handle flag selection step"""
+    try:
+        flag_idx = int(text) - 1
+        if flag_idx < 0 or flag_idx >= len(FLAGS):
+            await update.message.reply_text(
+                f"❌ **1 se {len(FLAGS)} ke beech number chuno!**\n\nDobara try karo:",
+                parse_mode="Markdown"
             )
             return
         
+        selected_flag = FLAGS[flag_idx]
+        state["flag"] = selected_flag
+        state["step"] = "select_trait"
+        set_user_state(user_id, state)
+        
+        # Show trait selection
+        trait_text = f"🏰 **{state['kingdom_name']}** {selected_flag}\n\n"
+        trait_text += "⚡ **Step 3 of 4: Select Kingdom Trait**\n\n"
+        
+        for key, trait in KINGDOM_TRAITS.items():
+            trait_text += f"**{trait['name']}**\n"
+            trait_text += f"_{trait['description']}_\n\n"
+        
+        trait_text += "Trait ke liye type karo:\n"
+        trait_text += "`aggressive` / `defensive` / `rich` / `balanced`"
+        
+        await update.message.reply_text(
+            trait_text,
+            parse_mode="Markdown"
+        )
+    
+    except ValueError:
+        await update.message.reply_text(
+            "❌ **Valid number enter karo!**\n\nDobara try karo:",
+            parse_mode="Markdown"
+        )
+
+
+async def _handle_trait_selection_step(update: Update, user_id: int, text: str, state: dict):
+    """Handle trait selection and create kingdom"""
+    trait = text.lower().strip()
+    if trait not in KINGDOM_TRAITS:
+        await update.message.reply_text(
+            "❌ **Valid trait chuno:**\n"
+            "`aggressive` / `defensive` / `rich` / `balanced`\n\n"
+            "Dobara try karo:",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # Show loading animation
+    loading_msg = await update.message.reply_text(
+        "🏰 **Creating your Kingdom...**\n"
+        "━━━━━━━━━━━━━━\n"
+        "⚡ Generating map position...\n"
+        "🏗 Constructing buildings...\n"
+        "🗡 Training starter army...\n"
+        "🧙 Summoning heroes..."
+    )
+    
+    try:
         # Create kingdom!
         kingdom = GameData.create_kingdom(
             user_id=user_id,
@@ -215,65 +371,90 @@ async def handle_text_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         # Clear state
-        del user_states[user_id]
+        clear_user_state(user_id)
         
-        # Update user tutorial
+        # Update user tutorial step
         with get_db() as db:
             user = db.query(User).filter(User.telegram_id == user_id).first()
             if user:
                 user.tutorial_step = 1
                 db.commit()
         
-        # Show created message
-        created_text = f"""🎉 **Kingdom Created!**
+        # Update loading message
+        trait_info = KINGDOM_TRAITS[trait]
+        
+        created_text = f"""🎉 **KINGDOM CREATED SUCCESSFULLY!**
 ━━━━━━━━━━━━━━
 
-👑 Kingdom: {kingdom.name} {kingdom.flag}
+👑 Kingdom: **{kingdom.name}** {kingdom.flag}
 📍 Location: ({kingdom.map_x}, {kingdom.map_y})
-⚡ Trait: {KINGDOM_TRAITS[trait]['name']}
+⚡ Trait: {trait_info['name']}
 
 🎁 **Starter Resources:**
 💰 {kingdom.gold:,} Gold
 🍖 {kingdom.food:,} Food
 ⚡ {kingdom.energy}/10 Energy
-🗡 {50} Infantry
+🗡 50 Infantry
 
 🛡 **24h Newbie Shield active!**
 
 Tutorial shuru ho raha hai..."""
         
-        await update.message.reply_text(created_text)
+        await loading_msg.edit_text(
+            created_text,
+            parse_mode="Markdown"
+        )
         
-        # Start tutorial
+        # Start tutorial after a brief delay
+        await asyncio.sleep(2)
         await start_tutorial(update, context, user_id)
+    
+    except Exception as e:
+        logger.error(f"Error creating kingdom: {e}")
+        await loading_msg.edit_text(
+            "❌ **Error creating kingdom!**\n"
+            "Please try again with /start",
+            parse_mode="Markdown"
+        )
+        clear_user_state(user_id)
 
+
+# ─── Tutorial System ───
 
 async def start_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Start the 3-step interactive tutorial"""
-    tutorial_text = """📚 **TUTORIAL** (Step 1/3)
+    """Start the interactive tutorial"""
+    try:
+        tutorial_text = """📚 **TUTORIAL** (Step 1/3)
 ━━━━━━━━━━━━━━
 
-💰 **Collect Resources**
+💰 **Resource Collection**
 Gold Mine se gold ikattha karo!
+Yeh aapki kingdom ki growth ka base hai.
 
-👉 [🏗 Build] button → Gold Mine → [📥 Collect]
+👉 **Gold Mine** par click karo → **📥 Collect** dabao
 
 Try karo!"""
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("⛏ Gold Mine — 📥 Collect", callback_data="tutorial_collect")],
+        ])
+        
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=tutorial_text,
+            reply_markup=keyboard,
+            parse_mode="Markdown"
+        )
+        
+        # Mark tutorial step
+        state = get_user_state(user_id)
+        if not state:
+            state = {}
+        state["step"] = "tutorial_1"
+        set_user_state(user_id, state)
     
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏗 Build", callback_data="tutorial_build")],
-    ])
-    
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=tutorial_text,
-        reply_markup=keyboard
-    )
-    
-    # Mark tutorial step
-    user_states[user_id] = {"step": "tutorial_1"}
+    except Exception as e:
+        logger.error(f"Error starting tutorial: {e}")
 
 
 async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,21 +465,25 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
     user_id = query.from_user.id
     data = query.data
     
-    state = user_states.get(user_id, {})
+    state = get_user_state(user_id) or {}
     tutorial_step = state.get("step", "")
     
-    if data == "tutorial_build":
-        # Show building menu
-        await query.edit_message_text(
-            "🏗 **Buildings**\n\n"
-            "⛏ Gold Mine — Lv.1\n"
-            "📥 Collect karne ke liye Gold Mine par click karo!",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("⛏ Gold Mine — 📥 Collect", callback_data="tutorial_collect")],
-            ])
-        )
+    if data == "tutorial_collect":
+        await _handle_tutorial_collect(query, user_id, state)
     
-    elif data == "tutorial_collect":
+    elif data == "tutorial_upgrade":
+        await _handle_tutorial_upgrade(query, user_id, state)
+    
+    elif data == "tutorial_attack":
+        await _handle_tutorial_attack(query, user_id, state, context)
+    
+    else:
+        await query.answer("Tutorial step not recognized")
+
+
+async def _handle_tutorial_collect(query, user_id: int, state: dict):
+    """Handle tutorial collect step"""
+    try:
         # Give starter gold bonus
         with get_db() as db:
             kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
@@ -308,19 +493,30 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
         
         # Move to step 2
         state["step"] = "tutorial_2"
+        set_user_state(user_id, state)
         
         await query.edit_message_text(
-            "🎉 **Step 1 Complete!**\n💰 +100 Gold!\n\n"
-            "📚 **TUTORIAL** (Step 2/3)\n━━━━━━━━━━━━━━\n\n"
-            "⬆️ **Upgrade Building**\n"
+            "🎉 **Step 1 Complete!** ✅\n"
+            "💰 +100 Gold collected!\n\n"
+            "📚 **TUTORIAL** (Step 2/3)\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "⬆️ **Building Upgrade**\n"
             "Town Hall upgrade karo apni kingdom ka level badhane ke liye!\n\n"
-            "👉 [🏰 Town Hall] → [⬆️ Upgrade]",
+            "Higher level = More features unlocked!\n\n"
+            "👉 **Town Hall** → **⬆️ Upgrade** par click karo",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🏰 Town Hall — ⬆️ Upgrade", callback_data="tutorial_upgrade")],
-            ])
+            ]),
+            parse_mode="Markdown"
         )
-    
-    elif data == "tutorial_upgrade":
+    except Exception as e:
+        logger.error(f"Tutorial collect error: {e}")
+        await query.edit_message_text("❌ Error in tutorial. Please /start again.")
+
+
+async def _handle_tutorial_upgrade(query, user_id: int, state: dict):
+    """Handle tutorial upgrade step"""
+    try:
         # Simulate instant upgrade
         with get_db() as db:
             kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
@@ -331,30 +527,42 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
             if building and kingdom:
                 building.level = 2
                 kingdom.level = 2
+                kingdom.buildings_upgraded = getattr(kingdom, 'buildings_upgraded', 0) + 1
                 db.commit()
         
         state["step"] = "tutorial_3"
+        set_user_state(user_id, state)
         
         await query.edit_message_text(
-            "🎉 **Step 2 Complete!**\n🏰 Town Hall Lv.2!\n\n"
-            "📚 **TUTORIAL** (Step 3/3)\n━━━━━━━━━━━━━━\n\n"
-            "⚔️ **First Attack**\n"
-            "Ek weak AI player par attack karo!\n\n"
-            "👉 [⚔️ Attack] button → [🎯 Tutorial Battle]",
+            "🎉 **Step 2 Complete!** ✅\n"
+            "🏰 Town Hall upgraded to Lv.2!\n\n"
+            "📚 **TUTORIAL** (Step 3/3)\n"
+            "━━━━━━━━━━━━━━\n\n"
+            "⚔️ **First Battle**\n"
+            "Ek weak AI player par attack karo!\n"
+            "Combat system kaise kaam karta hai seekho.\n\n"
+            "👉 **Tutorial Battle** par click karo",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("⚔️ Tutorial Battle", callback_data="tutorial_attack")],
-            ])
+            ]),
+            parse_mode="Markdown"
         )
-    
-    elif data == "tutorial_attack":
+    except Exception as e:
+        logger.error(f"Tutorial upgrade error: {e}")
+        await query.edit_message_text("❌ Error in tutorial. Please /start again.")
+
+
+async def _handle_tutorial_attack(query, user_id: int, state: dict, context: ContextTypes.DEFAULT_TYPE):
+    """Handle tutorial battle step"""
+    try:
         # Simulate tutorial battle against AI
-        from bot.services.combat_engine import CombatEngine
-        from bot.services.game_data import GameData
-        
         with get_db() as db:
             attacker = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+            if not attacker:
+                await query.edit_message_text("❌ Kingdom not found! /start again.")
+                return
             
-            # Create a dummy defender
+            # Create a dummy defender (training dummy)
             defender = Kingdom(
                 user_id=0,
                 name="Training Dummy",
@@ -366,15 +574,26 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
                 map_x=attacker.map_x,
                 map_y=attacker.map_y + 1,
                 shield_expires=datetime.utcnow(),
+                trait="balanced",
             )
             db.add(defender)
             db.commit()
             db.refresh(defender)
             
-            defender_army = Army(kingdom_id=0, infantry=10)
+            # Create dummy army
+            defender_army = Army(kingdom_id=0, infantry=10, archers=0, cavalry=0)
             db.add(defender_army)
             db.commit()
             
+            # Load attacker army
+            attacker_army = db.query(Army).filter(Army.kingdom_id == user_id).first()
+            attacker.army = attacker_army
+            defender.army = defender_army
+            
+            # Load buildings for attacker
+            attacker.buildings = db.query(Building).filter(Building.kingdom_id == user_id).all()
+            
+            # Simulate battle
             engine = CombatEngine(attacker, defender, is_tutorial=True)
             result = engine.simulate_battle()
             
@@ -385,23 +604,23 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
                 attacker.battles_won += 1
             
             # Deduct attacker losses
-            if attacker.army:
-                attacker.army.infantry = max(0, attacker.army.infantry - result["attacker_losses"]["infantry"])
-                attacker.army.archers = max(0, attacker.army.archers - result["attacker_losses"]["archers"])
-                attacker.army.cavalry = max(0, attacker.army.cavalry - result["attacker_losses"]["cavalry"])
+            if attacker_army:
+                attacker_army.infantry = max(0, attacker_army.infantry - result["attacker_losses"]["infantry"])
+                attacker_army.archers = max(0, attacker_army.archers - result["attacker_losses"]["archers"])
+                attacker_army.cavalry = max(0, attacker_army.cavalry - result["attacker_losses"]["cavalry"])
             
-            # Save battle
+            # Save battle log
+            from bot.models import Battle
             battle = Battle(
                 attacker_id=user_id,
                 defender_id=0,
                 winner_id=user_id if result["winner"] == "attacker" else None,
-                battle_log=json.dumps(result["rounds"]),
+                battle_log=json.dumps(result.get("rounds", [])),
                 gold_looted=result["gold_loot"],
                 xp_gained=result["xp_gain"],
                 is_tutorial=1,
             )
             db.add(battle)
-            db.commit()
             
             # Remove dummy
             db.query(Army).filter(Army.kingdom_id == 0).delete()
@@ -409,7 +628,7 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
             db.commit()
         
         # Tutorial complete
-        del user_states[user_id]
+        clear_user_state(user_id)
         
         # Update user
         with get_db() as db:
@@ -418,16 +637,22 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
                 user.tutorial_step = 3
                 db.commit()
         
-        await query.edit_message_text(
+        # Show battle result + completion
+        battle_summary = (
             f"{result['message']}\n\n"
-            "🎉 **TUTORIAL COMPLETE!**\n"
-            "━━━━━━━━━━━━━━\n\n"
-            "🎁 **Bonus Rewards:**\n"
-            "💰 +500 Gold\n"
-            "🍖 +200 Food\n"
-            "💎 +1 Gem\n\n"
-            "Aap taiyaar hain! 👑\n"
-            "Dashboard khul raha hai..."
+            f"🎉 **TUTORIAL COMPLETE!**\n"
+            f"━━━━━━━━━━━━━━\n\n"
+            f"🎁 **Completion Rewards:**\n"
+            f"💰 +500 Gold\n"
+            f"🍖 +200 Food\n"
+            f"💎 +1 Gem\n\n"
+            f"✅ Aap taiyaar hain! 👑\n"
+            f"Dashboard khul raha hai..."
+        )
+        
+        await query.edit_message_text(
+            battle_summary,
+            parse_mode="Markdown"
         )
         
         # Give tutorial rewards
@@ -436,9 +661,32 @@ async def handle_tutorial_callback(update: Update, context: ContextTypes.DEFAULT
             if kingdom:
                 kingdom.gold += 500
                 kingdom.food += 200
-                kingdom.gems += 1
+                kingdom.gems = getattr(kingdom, 'gems', 0) + 1
                 db.commit()
         
-        # Show dashboard
+        # Show dashboard after delay
+        await asyncio.sleep(3)
         from bot.handlers.dashboard import render_dashboard
         await render_dashboard(update, context, user_id, new_message=True)
+    
+    except Exception as e:
+        logger.error(f"Tutorial battle error: {e}")
+        await query.edit_message_text(
+            "❌ Battle simulation error.\n"
+            "Aapka kingdom create ho gaya hai! /dashboard se continue karo.",
+            parse_mode="Markdown"
+        )
+        clear_user_state(user_id)
+
+
+# ─── Utility Functions ───
+
+async def cancel_user_flow(update: Update, user_id: int):
+    """Cancel any active user flow"""
+    clear_user_state(user_id)
+    await update.message.reply_text(
+        "❌ Cancelled.\n\nDashboard ke liye /dashboard type karo.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Dashboard", callback_data="back_dashboard")]
+        ])
+    )
