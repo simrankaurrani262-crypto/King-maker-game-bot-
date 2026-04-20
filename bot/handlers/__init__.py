@@ -1,6 +1,6 @@
 """
 Handlers Package - All Telegram bot command and callback handlers
-Version: 2.0.0
+Version: 2.0.0 - Advanced Edition with all features
 """
 
 from . import (
@@ -17,7 +17,12 @@ from . import (
     leaderboard,     # Rankings
     settings,        # Preferences
     admin,           # Admin commands
-    stats,           # NEW: Statistics & Charts (v2.0)
+    stats,           # Statistics & Charts
+    training,        # NEW: Training center
+    trade,           # NEW: Trade system
+    bounty,          # NEW: Bounty system
+    achievements,    # NEW: Achievement system
+    world_events,    # NEW: World events
 )
 
 __all__ = [
@@ -34,5 +39,10 @@ __all__ = [
     'leaderboard',
     'settings',
     'admin',
-    'stats',  # NEW
+    'stats',
+    'training',
+    'trade',
+    'bounty',
+    'achievements',
+    'world_events',
 ]

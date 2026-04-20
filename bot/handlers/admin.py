@@ -251,13 +251,70 @@ async def admin_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text("❌ Usage: `/admin maintenance <on|off>`")
         return
-    
+
     state = context.args[1].lower()
     from bot.config import config
-    
+
     if state == "on":
         config.MAINTENANCE_MODE = True
         await update.message.reply_text("🔧 Maintenance mode **ON**")
     else:
         config.MAINTENANCE_MODE = False
         await update.message.reply_text("✅ Maintenance mode **OFF**")
+
+
+async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle admin menu callbacks"""
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+    from bot.config import config
+
+    if user_id != config.ADMIN_TELEGRAM_ID:
+        await query.edit_message_text("⛔ Admin access only!")
+        return
+
+    data = query.data
+
+    if data == "admin_stats":
+        await _admin_stats_callback(query)
+
+    elif data == "admin_broadcast":
+        await query.edit_message_text(
+            "📢 Send broadcast message using:\n`/admin broadcast <message>`",
+            reply_markup=back_dashboard_keyboard()
+        )
+
+    elif data == "admin_maintenance":
+        await query.edit_message_text(
+            "🔧 Toggle maintenance:\n`/admin maintenance <on|off>`",
+            reply_markup=back_dashboard_keyboard()
+        )
+
+
+async def _admin_stats_callback(query):
+    """Show admin stats in callback"""
+    with get_db() as db:
+        total_users = db.query(User).count()
+        total_kingdoms = db.query(Kingdom).count()
+        banned_users = db.query(User).filter(User.is_banned == True).count()
+        active_today = db.query(User).filter(
+            User.last_active > datetime.utcnow() - timedelta(days=1)
+        ).count()
+
+    text = (
+        f"📊 **BOT STATISTICS**\n"
+        f"━━━━━━━━━━━━━━\n\n"
+        f"👥 Total Users: {total_users}\n"
+        f"🏰 Total Kingdoms: {total_kingdoms}\n"
+        f"🟢 Active Today: {active_today}\n"
+        f"⛔ Banned: {banned_users}"
+    )
+
+    await query.edit_message_text(text, reply_markup=back_dashboard_keyboard())
+
+
+# Import at bottom to avoid circular issues
+from bot.utils.keyboards import back_dashboard_keyboard
+from bot.models import get_db, User, Kingdom

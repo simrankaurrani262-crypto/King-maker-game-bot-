@@ -158,7 +158,7 @@ async def initiate_attack(update: Update, context: ContextTypes.DEFAULT_TYPE, at
         await query.answer("❌ Energy kam hai!")
         return
     
-    if defender.has_shield:
+    if defender.shield_expires and datetime.utcnow() < defender.shield_expires:
         await query.answer("🛡 Defender ke paas shield hai!")
         return
     

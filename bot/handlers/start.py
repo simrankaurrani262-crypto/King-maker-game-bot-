@@ -5,11 +5,12 @@ Fixed version with proper imports, error handling, and visual effects.
 
 import random
 import json
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from telegram import (
-    Update, 
-    InlineKeyboardButton, 
+    Update,
+    InlineKeyboardButton,
     InlineKeyboardMarkup
 )
 from telegram.ext import ContextTypes

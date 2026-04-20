@@ -13,7 +13,7 @@ async def show_spy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     """Show spy menu"""
     query = update.callback_query
     
-    kingdom = GameData.get_kingdom(user_id)
+    kingdom = GameData.get_kingdom_with_relations(user_id)
     
     # Check cooldown
     cooldown = GameData.get_cooldown(user_id, "spy")
