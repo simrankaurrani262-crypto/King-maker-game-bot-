@@ -47,12 +47,16 @@ class GameData:
                 if username:
                     user.username = username
                 db.commit()
+            db.expunge(user)
             return user
     
     @staticmethod
     def get_user(telegram_id):
         with get_db() as db:
-            return db.query(User).filter(User.telegram_id == telegram_id).first()
+            user = db.query(User).filter(User.telegram_id == telegram_id).first()
+            if user:
+                db.expunge(user)
+            return user
     
     # ─── KINGDOM OPERATIONS ───
     
@@ -121,6 +125,8 @@ class GameData:
             GameData._create_default_achievements(db, user_id)
             
             db.commit()
+            db.refresh(kingdom)
+            db.expunge(kingdom)
             return kingdom
     
     @staticmethod
@@ -200,7 +206,10 @@ class GameData:
         if db_session:
             return db_session.query(Kingdom).filter(Kingdom.user_id == user_id).first()
         with get_db() as db:
-            return db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+            kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+            if kingdom:
+                db.expunge(kingdom)
+            return kingdom
     
     @staticmethod
     def get_kingdom_with_relations(user_id):
@@ -208,53 +217,72 @@ class GameData:
         with get_db() as db:
             kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
             if kingdom:
-                # Force load relationships
+                # Force load relationships within session
                 _ = kingdom.buildings
                 _ = kingdom.army
                 _ = kingdom.heroes
+                db.expunge(kingdom)
             return kingdom
     
     @staticmethod
     def get_all_kingdoms():
         """Get all kingdoms"""
         with get_db() as db:
-            return db.query(Kingdom).all()
+            kingdoms = db.query(Kingdom).all()
+            for k in kingdoms:
+                db.expunge(k)
+            return kingdoms
     
     @staticmethod
     def get_buildings(user_id):
         """Get all buildings for a kingdom"""
         with get_db() as db:
-            return db.query(Building).filter(Building.kingdom_id == user_id).all()
+            buildings = db.query(Building).filter(Building.kingdom_id == user_id).all()
+            for b in buildings:
+                db.expunge(b)
+            return buildings
     
     @staticmethod
     def get_building(user_id, building_type):
         """Get specific building"""
         with get_db() as db:
-            return db.query(Building).filter(
+            building = db.query(Building).filter(
                 Building.kingdom_id == user_id,
                 Building.building_type == building_type
             ).first()
+            if building:
+                db.expunge(building)
+            return building
     
     @staticmethod
     def get_army(user_id):
         """Get army for a kingdom"""
         with get_db() as db:
-            return db.query(Army).filter(Army.kingdom_id == user_id).first()
+            army = db.query(Army).filter(Army.kingdom_id == user_id).first()
+            if army:
+                db.expunge(army)
+            return army
     
     @staticmethod
     def get_heroes(user_id):
         """Get all heroes for a kingdom"""
         with get_db() as db:
-            return db.query(Hero).filter(Hero.kingdom_id == user_id).all()
+            heroes = db.query(Hero).filter(Hero.kingdom_id == user_id).all()
+            for h in heroes:
+                db.expunge(h)
+            return heroes
     
     @staticmethod
     def get_hero(user_id, hero_type):
         """Get specific hero"""
         with get_db() as db:
-            return db.query(Hero).filter(
+            hero = db.query(Hero).filter(
                 Hero.kingdom_id == user_id,
                 Hero.hero_type == hero_type
             ).first()
+            if hero:
+                db.expunge(hero)
+            return hero
     
     @staticmethod
     def find_opponents(attacker_id, limit=3):
@@ -263,6 +291,7 @@ class GameData:
             attacker = db.query(Kingdom).filter(Kingdom.user_id == attacker_id).first()
             if not attacker:
                 return []
+            db.expunge(attacker)
             
             # Get attacker's alliance
             attacker_alliance = db.query(AllianceMember).filter(
@@ -284,6 +313,7 @@ class GameData:
             from bot.services.economy import EconomyService
             results = []
             for c in candidates:
+                db.expunge(c)
                 if c.has_shield:
                     continue
                 power = EconomyService.calculate_kingdom_power(c)
@@ -303,6 +333,7 @@ class GameData:
             kingdoms = db.query(Kingdom).all()
             ranked = []
             for k in kingdoms:
+                db.expunge(k)
                 power = EconomyService.calculate_kingdom_power(k)
                 ranked.append((k, power))
             ranked.sort(key=lambda x: x[1], reverse=True)
@@ -318,6 +349,7 @@ class GameData:
             ).order_by(Cooldown.expires_at.desc()).first()
             
             if cd and cd.expires_at > datetime.utcnow():
+                db.expunge(cd)
                 return cd.expires_at
             return None
     
@@ -337,16 +369,22 @@ class GameData:
     def get_user_quests(kingdom_id):
         """Get all user quests"""
         with get_db() as db:
-            return db.query(UserQuest).filter(UserQuest.kingdom_id == kingdom_id).all()
+            quests = db.query(UserQuest).filter(UserQuest.kingdom_id == kingdom_id).all()
+            for q in quests:
+                db.expunge(q)
+            return quests
     
     @staticmethod
     def get_active_bounties(limit=20):
         """Get active bounties"""
         with get_db() as db:
-            return db.query(Bounty).filter(
+            bounties = db.query(Bounty).filter(
                 Bounty.active == True,
                 Bounty.claimed_by == None
             ).order_by(Bounty.reward_gold.desc()).limit(limit).all()
+            for b in bounties:
+                db.expunge(b)
+            return bounties
     
     @staticmethod
     def get_notification_prefs(user_id):
@@ -357,13 +395,18 @@ class GameData:
                 prefs = NotificationPref(user_id=user_id)
                 db.add(prefs)
                 db.commit()
+                db.refresh(prefs)
+            db.expunge(prefs)
             return prefs
     
     @staticmethod
     def get_active_world_events():
         """Get currently active world events"""
         with get_db() as db:
-            return db.query(WorldEvent).filter(
+            events = db.query(WorldEvent).filter(
                 WorldEvent.is_active == 1,
                 WorldEvent.ends_at > datetime.utcnow()
             ).all()
+            for e in events:
+                db.expunge(e)
+            return events
