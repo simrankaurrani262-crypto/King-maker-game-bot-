@@ -33,6 +33,15 @@ def get_db():
         db.close()
 
 
-def init_db():
+def init_db(db_url: str = None):
     """Initialize database tables"""
-    Base.metadata.create_all(bind=engine)
+    if db_url and db_url != DATABASE_URL:
+        new_engine = create_engine(
+            db_url,
+            connect_args={"check_same_thread": False} if db_url.startswith("sqlite") else {},
+            pool_pre_ping=True,
+            echo=False
+        )
+        Base.metadata.create_all(bind=new_engine)
+    else:
+        Base.metadata.create_all(bind=engine)
