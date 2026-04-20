@@ -1,281 +1,292 @@
-"""
-King-Maker Bot — Elite Edition
-Building / Construction / Resource Management Handlers
-"""
-
-import json
 from datetime import datetime, timedelta
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-
-from bot.config import config
-from bot.models import get_db, Kingdom, Building
+from bot.models import get_db, Building
+from bot.services.game_data import GameData
 from bot.services.economy import EconomyService
+from bot.utils.formatters import format_number, format_duration
+from bot.utils.keyboards import building_menu_keyboard, building_action_keyboard, back_dashboard_keyboard
+from bot.utils.constants import BUILDING_CONFIG
 
 
-# ── Building configs ─────────────────────────────────────────────
-BUILDING_CONFIGS = {
-    "town_hall": {"base_cost": 200, "base_time": 300, "emoji": "🏛", "display": "Town Hall"},
-    "barracks": {"base_cost": 100, "base_time": 180, "emoji": "⚔️", "display": "Barracks"},
-    "farm": {"base_cost": 80, "base_time": 120, "emoji": "🌾", "display": "Farm"},
-    "gold_mine": {"base_cost": 120, "base_time": 150, "emoji": "⛏️", "display": "Gold Mine"},
-    "wall": {"base_cost": 150, "base_time": 200, "emoji": "🛡", "display": "Wall"},
-    "market": {"base_cost": 100, "base_time": 140, "emoji": "🏪", "display": "Market"},
-}
-
-
-def render_bar(value: int, maximum: int, width: int = 12, fill: str = "█", empty: str = "░") -> str:
-    """Render a horizontal progress bar."""
-    if maximum <= 0:
-        return empty * width
-    ratio = min(value / maximum, 1.0)
-    filled = int(round(ratio * width))
-    return fill * filled + empty * (width - filled)
-
-
-async def view_building_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, building_type: str):
-    """Show detailed building info with visual upgrade progress."""
+async def show_building_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Show the building management menu"""
     query = update.callback_query
-    user_id = update.effective_user.id
-
-    with get_db() as db:
-        building = db.query(Building).filter(
-            Building.kingdom_id == user_id,
-            Building.building_type == building_type,
-        ).first()
-
-        if not building:
-            return await query.edit_message_text("❌ Building nahi mili!")
-
-        cfg = BUILDING_CONFIGS.get(building_type, {})
-        upgrade_cost = cfg.get("base_cost", 100) * building.level
-        upgrade_time = cfg.get("base_time", 120) * building.level
-
-        # Production info
-        gold_prod = EconomyService.calculate_gold_production(building.kingdom) if hasattr(building, 'kingdom') else 0
-        food_prod = EconomyService.calculate_food_production(building.kingdom) if hasattr(building, 'kingdom') else 0
-
-        # Upgrade progress
-        if building.is_upgrading and building.upgrade_completes:
-            remaining = (building.upgrade_completes - datetime.utcnow()).total_seconds()
-            total = (building.upgrade_completes - building.upgrade_started).total_seconds() if building.upgrade_started else upgrade_time
-            if total > 0:
-                progress = 1 - (remaining / total)
-                bar = render_bar(int(progress * 100), 100, 10)
-                status = f"⏳ Upgrading...\n{bar} {int(progress * 100)}%\n{int(max(0, remaining) / 60)} min remaining"
-            else:
-                status = "⏳ Upgrading..."
-        else:
-            status = "✅ Ready"
-
-        text = (
-            f"{building.emoji} **{building.display_name}** — Level {building.level}\n\n"
-            f"📊 Status: {status}\n\n"
-            f"⬆️ **Upgrade Cost:**\n"
-            f"   💰 {upgrade_cost} Gold\n"
-            f"   ⏱ {upgrade_time // 60} min {upgrade_time % 60}s\n\n"
-            f"📈 **Production:**\n"
-            f"   💰 +{gold_prod}/hr\n"
-            f"   🍖 +{food_prod}/hr\n\n"
-            f"ℹ️ **Info:**\n"
-            f"Har upgrade se production +10% badhti hai!"
-        )
-
-        if building.is_upgrading:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⏳ Upgrading...", callback_data="noop")],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_build")],
-            ])
-        else:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("⬆️ Upgrade", callback_data=f"building_upgrade:{building_type}"),
-                 InlineKeyboardButton("📥 Collect", callback_data=f"building_collect:{building_type}")],
-                [InlineKeyboardButton("ℹ️ Info", callback_data=f"building_info:{building_type}")],
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_build")],
-            ])
-
-        await query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+    
+    buildings = GameData.get_buildings(user_id)
+    
+    text = "🏗 **BUILDING MENU**\n━━━━━━━━━━━━━━\n\n"
+    
+    for b in buildings:
+        status = "⬆️ Upgrading" if b.is_upgrading else f"Lv.{b.level}"
+        text += f"{b.emoji} {b.display_name} — {status}\n"
+    
+    text += "\n━━━━━━━━━━━━━━\nSelect a building:"
+    
+    keyboard = building_menu_keyboard(buildings)
+    
+    try:
+        await query.edit_message_text(text, reply_markup=keyboard)
+    except Exception:
+        await context.bot.send_message(chat_id=user_id, text=text, reply_markup=keyboard)
 
 
-async def upgrade_building(update: Update, context: ContextTypes.DEFAULT_TYPE, building_type: str):
-    """Start building upgrade with visual confirmation."""
+async def handle_build_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle building-related callbacks"""
     query = update.callback_query
-    user_id = update.effective_user.id
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "menu_build":
+        await show_building_menu(update, context, user_id)
+        return
+    
+    if data.startswith("building_select:"):
+        building_type = data.split(":")[1]
+        await show_building_detail(update, context, user_id, building_type)
+    
+    elif data.startswith("building_upgrade:"):
+        building_type = data.split(":")[1]
+        await upgrade_building(update, context, user_id, building_type)
+    
+    elif data.startswith("building_collect:"):
+        building_type = data.split(":")[1]
+        await collect_resources(update, context, user_id, building_type)
+    
+    elif data.startswith("building_info:"):
+        building_type = data.split(":")[1]
+        await show_building_info(update, context, user_id, building_type)
 
+
+async def show_building_detail(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, building_type: str):
+    """Show detail for a specific building"""
+    query = update.callback_query
+    
+    building = GameData.get_building(user_id, building_type)
+    if not building:
+        await query.edit_message_text("❌ Building not found!", reply_markup=back_dashboard_keyboard())
+        return
+    
+    kingdom = GameData.get_kingdom(user_id)
+    
+    # Calculate upgrade cost
+    cost = EconomyService.calculate_upgrade_cost(building_type, building.level)
+    
+    # Calculate production
+    production = EconomyService.calculate_production_rate(building_type, building.level, kingdom.trait)
+    next_production = EconomyService.calculate_production_rate(building_type, building.level + 1, kingdom.trait)
+    
+    text = f"{building.emoji} **{building.display_name}**\n"
+    text += f"━━━━━━━━━━━━━━\n"
+    text += f"📊 Level: {building.level}\n"
+    
+    if production > 0:
+        text += f"⚡ Production: {production:,}/hr\n"
+        text += f"⬆️ Next: {next_production:,}/hr\n"
+    
+    if building.is_upgrading:
+        remaining = building.upgrade_completes - datetime.utcnow()
+        minutes = max(0, int(remaining.total_seconds() / 60))
+        text += f"\n⏳ Upgrading... {minutes}m left\n"
+    else:
+        text += f"\n💰 Cost: {cost['gold']:,} Gold"
+        if cost['food'] > 0:
+            text += f", {cost['food']:,} Food"
+        text += f"\n⏱ Time: {format_duration(cost['time_minutes'])}\n"
+    
+    text += "\n━━━━━━━━━━━━━━"
+    
+    keyboard = building_action_keyboard(building_type, building.level, building.is_upgrading)
+    await query.edit_message_text(text, reply_markup=keyboard)
+
+
+async def upgrade_building(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, building_type: str):
+    """Start building upgrade"""
+    query = update.callback_query
+    
     with get_db() as db:
-        building = db.query(Building).filter(
-            Building.kingdom_id == user_id,
-            Building.building_type == building_type,
-        ).first()
-
-        if not building:
-            return await query.edit_message_text("❌ Building nahi mili!")
-
-        if building.is_upgrading:
-            return await query.edit_message_text(
-                "⏳ Already upgrading!\nWait karo...",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back", callback_data=f"building_select:{building_type}")],
-                ]),
-            )
-
-        cfg = BUILDING_CONFIGS.get(building_type, {})
-        upgrade_cost = cfg.get("base_cost", 100) * building.level
-
         kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom or kingdom.gold < upgrade_cost:
-            return await query.edit_message_text(
-                f"💰 {upgrade_cost} Gold chahiye!\nAapke paas: {kingdom.gold if kingdom else 0}",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔙 Back", callback_data=f"building_select:{building_type}")],
-                ]),
-            )
-
-        # Deduct gold and start upgrade
-        kingdom.gold -= upgrade_cost
+        building = db.query(Building).filter(
+            Building.kingdom_id == user_id,
+            Building.building_type == building_type
+        ).first()
+        
+        if not kingdom or not building:
+            await query.edit_message_text("❌ Error!", reply_markup=back_dashboard_keyboard())
+            return
+        
+        if building.is_upgrading:
+            await query.answer("⏳ Already upgrading!")
+            return
+        
+        cost = EconomyService.calculate_upgrade_cost(building_type, building.level)
+        
+        if kingdom.gold < cost['gold']:
+            await query.answer(f"❌ {cost['gold'] - kingdom.gold:,} Gold aur chahiye!")
+            return
+        
+        if kingdom.food < cost['food']:
+            await query.answer(f"❌ {cost['food'] - kingdom.food:,} Food aur chahiye!")
+            return
+        
+        # Deduct resources
+        kingdom.gold -= cost['gold']
+        kingdom.food -= cost['food']
+        
+        # Set upgrade
         building.is_upgrading = True
         building.upgrade_started = datetime.utcnow()
-        building.upgrade_completes = datetime.utcnow() + timedelta(seconds=cfg.get("base_time", 120) * building.level)
-
+        building.upgrade_completes = datetime.utcnow() + timedelta(minutes=cost['time_minutes'])
+        
+        kingdom.buildings_upgraded += 1
+        
         db.commit()
+    
+    await query.answer("⬆️ Upgrade started!")
+    
+    # Show updated detail
+    await show_building_detail(update, context, user_id, building_type)
+    
+    # Schedule completion check
+    context.job_queue.run_once(
+        complete_building_upgrade,
+        when=cost['time_minutes'] * 60,
+        data={'user_id': user_id, 'building_type': building_type},
+        name=f"upgrade_{user_id}_{building_type}"
+    )
 
-        # Visual progress bar
-        await query.edit_message_text(
-            f"⬆️ **{building.display_name}** upgrading to Level {building.level + 1}!\n\n"
-            f"💰 Gold spent: {upgrade_cost}\n"
-            f"⏱ Time: {cfg.get('base_time', 120) * building.level // 60} min\n"
-            f"{render_bar(0, 100, 10)} 0%\n\n"
-            f"Upgrade complete hone pe notification aa jayegi!",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Buildings", callback_data="menu_build")],
-            ]),
-        )
 
-
-async def collect_resources(update: Update, context: ContextTypes.DEFAULT_TYPE, building_type: str):
-    """Collect resources from building with visual output."""
-    query = update.callback_query
-    user_id = update.effective_user.id
-
+async def complete_building_upgrade(context: ContextTypes.DEFAULT_TYPE):
+    """Callback when building upgrade completes"""
+    job_data = context.job.data
+    user_id = job_data['user_id']
+    building_type = job_data['building_type']
+    
     with get_db() as db:
         building = db.query(Building).filter(
             Building.kingdom_id == user_id,
-            Building.building_type == building_type,
+            Building.building_type == building_type
         ).first()
-
-        if not building:
-            return await query.edit_message_text("❌ Building nahi mili!")
-
-        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not kingdom:
-            return await query.edit_message_text("❌ Kingdom nahi mila!")
-
-        # Calculate production based on building type and level
-        gold_gain = 0
-        food_gain = 0
-
-        if building_type == "gold_mine":
-            gold_gain = 10 * building.level
-        elif building_type == "farm":
-            food_gain = 15 * building.level
-        elif building_type == "market":
-            gold_gain = 5 * building.level
-            food_gain = 5 * building.level
-        elif building_type == "town_hall":
-            gold_gain = 20 * building.level
-            food_gain = 10 * building.level
-        else:
-            gold_gain = 3 * building.level
-
-        # Apply limits
-        max_cap = 10000
-        actual_gold = min(gold_gain, max_cap - kingdom.gold) if kingdom.gold < max_cap else 0
-        actual_food = min(food_gain, max_cap - kingdom.food) if kingdom.food < max_cap else 0
-
-        kingdom.gold += actual_gold
-        kingdom.food += actual_food
-
-        db.commit()
-
-        # Visual resource bars
-        gold_bar = render_bar(kingdom.gold, max_cap, 10)
-        food_bar = render_bar(kingdom.food, max_cap, 10)
-
-        lines = [f"📥 **Resources Collected from {building.display_name}!**\n"]
-        if actual_gold > 0:
-            lines.append(f"💰 +{actual_gold} Gold")
-        if actual_food > 0:
-            lines.append(f"🍖 +{actual_food} Food")
-        if actual_gold == 0 and actual_food == 0:
-            lines.append("📭 Storage full! Upgrade karo!")
-
-        lines.append(f"\n💰 {gold_bar} {kingdom.gold}/{max_cap}")
-        lines.append(f"🍖 {food_bar} {kingdom.food}/{max_cap}")
-
-        await query.edit_message_text(
-            "\n".join(lines),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Buildings", callback_data="menu_build")],
-            ]),
-        )
+        
+        if building and building.is_upgrading:
+            building.level += 1
+            building.is_upgrading = False
+            building.upgrade_started = None
+            building.upgrade_completes = None
+            db.commit()
+            
+            # Notify user
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ **{building.display_name}** is now **Level {building.level}**!"
+                )
+            except Exception:
+                pass
 
 
-async def building_info(update: Update, context: ContextTypes.DEFAULT_TYPE, building_type: str):
-    """Show detailed building information with upgrade chart."""
+async def collect_resources(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, building_type: str):
+    """Collect resources from a building"""
     query = update.callback_query
+    
+    with get_db() as db:
+        kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        building = db.query(Building).filter(
+            Building.kingdom_id == user_id,
+            Building.building_type == building_type
+        ).first()
+        
+        if not kingdom or not building:
+            await query.answer("❌ Error!")
+            return
+        
+        produced = EconomyService.calculate_collected_resources(building, kingdom.trait)
+        
+        if produced < 1:
+            await query.answer("❌ Koi resource taiyaar nahi! Thodi der baad aao!")
+            return
+        
+        # Add resources
+        if building_type == "gold_mine":
+            kingdom.gold += produced
+            resource_emoji = "💰"
+        elif building_type == "farm":
+            kingdom.food += produced
+            resource_emoji = "🍖"
+        elif building_type == "barracks":
+            # Barracks produces soldiers
+            if kingdom.army:
+                kingdom.army.infantry += produced
+                kingdom.soldiers_trained += produced
+            resource_emoji = "🗡"
+        else:
+            await query.answer("❌ Is building se collect nahi ho sakta!")
+            return
+        
+        building.last_collected = datetime.utcnow()
+        db.commit()
+    
+    await query.answer(f"{resource_emoji} +{produced:,} collected!")
+    
+    # Show updated detail
+    await show_building_detail(update, context, user_id, building_type)
 
-    info_data = {
-        "town_hall": {
-            "name": "🏛 Town Hall",
-            "desc": "Kingdom ka main building. Har level pe naye features unlock hote hain.",
-            "benefits": ["Level 2: Alliance unlock", "Level 3: Heroes unlock", "Level 5: Spy agency unlock"],
-        },
-        "barracks": {
-            "name": "⚔️ Barracks",
-            "desc": "Army training ka center. Har level pe training speed badhti hai.",
-            "benefits": ["+Training speed per level", "+Army capacity at Lv.5", "Elite units at Lv.10"],
-        },
-        "farm": {
-            "name": "🌾 Farm",
-            "desc": "Food production. Army ko food chahiye warna bhaag jayegi!",
-            "benefits": ["+15 Food/level per collect", "Storage +100 per level", "Auto-collect at Lv.10"],
-        },
-        "gold_mine": {
-            "name": "⛏️ Gold Mine",
-            "desc": "Gold production. Sabse important resource hai!",
-            "benefits": ["+10 Gold/level per collect", "Storage +100 per level", "Gem mining at Lv.10"],
-        },
-        "wall": {
-            "name": "🛡 Wall",
-            "desc": "Kingdom ki defense. Attack se protection deta hai.",
-            "benefits": ["+10% Defense/level", "Trap damage at Lv.5", "Moat at Lv.10"],
-        },
-        "market": {
-            "name": "🏪 Market",
-            "desc": "Trade center. Resources exchange kar sakte ho.",
-            "benefits": ["Resource trading", "Better exchange rates/level", "Black market at Lv.8"],
-        },
-    }
 
-    info = info_data.get(building_type, {"name": building_type, "desc": "No info", "benefits": []})
+async def show_building_info(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, building_type: str):
+    """Show building information"""
+    query = update.callback_query
+    
+    config = BUILDING_CONFIG.get(building_type, {})
+    building = GameData.get_building(user_id, building_type)
+    
+    text = f"ℹ️ **{config.get('name', building_type)}** Info\n"
+    text += f"━━━━━━━━━━━━━━\n"
+    text += f"{config.get('description', '')}\n\n"
+    text += f"Max Level: 25\n"
+    text += f"Current: Lv.{building.level if building else 1}\n"
+    
+    if building_type == "town_hall":
+        text += "\n🏰 Har level par naye buildings unlock hote hain!"
+    elif building_type == "gold_mine":
+        text += f"\n⛏ Gold production scales with level"
+    elif building_type == "farm":
+        text += f"\n🌾 Food production scales with level"
+    elif building_type == "barracks":
+        text += f"\n🏹 Training speed scales with level\n"
+        text += "Lv.2 → 🏹 Archers unlock\n"
+        text += "Lv.4 → 🐎 Cavalry unlock"
+    elif building_type == "wall":
+        text += f"\n🛡 Each level: +3% damage reduction"
+    
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Back", callback_data=f"building_select:{building_type}")],
+    ])
+    
+    await query.edit_message_text(text, reply_markup=keyboard)
 
-    text = (
-        f"{info['name']}\n\n"
-        f"{info['desc']}\n\n"
-        f"📈 **Upgrade Benefits:**\n"
-    )
-    for benefit in info["benefits"]:
-        text += f"  • {benefit}\n"
 
-    text += "\n💡 Tip: Har upgrade se production +10% badhti hai!"
-
-    await query.edit_message_text(
-        text,
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔙 Back", callback_data=f"building_select:{building_type}")],
-        ]),
-    )
+async def process_all_building_upgrades(context: ContextTypes.DEFAULT_TYPE):
+    """Background task: check and complete all building upgrades"""
+    with get_db() as db:
+        upgrading = db.query(Building).filter(
+            Building.is_upgrading == True,
+            Building.upgrade_completes <= datetime.utcnow()
+        ).all()
+        
+        for building in upgrading:
+            building.level += 1
+            building.is_upgrading = False
+            building.upgrade_started = None
+            building.upgrade_completes = None
+            
+            try:
+                await context.bot.send_message(
+                    chat_id=building.kingdom_id,
+                    text=f"✅ **{building.display_name}** is now **Level {building.level}**!"
+                )
+            except Exception:
+                pass
+        
+        db.commit()

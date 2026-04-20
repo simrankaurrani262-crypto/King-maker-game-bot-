@@ -1,230 +1,217 @@
-"""
-King-Maker Bot — Elite Edition
-Spy / Espionage Handlers — Fixed cooldown system
-"""
-
+import random
 from datetime import datetime, timedelta
-
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-
-from bot.models import get_db, Kingdom, SpyReport, Cooldown
-from bot.services.economy import EconomyService
+from bot.models import get_db, SpyReport, Kingdom
+from bot.services.game_data import GameData
+from bot.utils.formatters import format_number
 from bot.utils.keyboards import spy_menu_keyboard, back_dashboard_keyboard
+from bot.utils.constants import SPY_COST_GOLD, SPY_SUCCESS_BASE_CHANCE, SPY_TRAP_CHANCE, SPY_COOLDOWN_MINUTES
 
 
-SPY_COOLDOWN_MINUTES = 5
-SPY_COST_GOLD = 50
-
-
-async def show_spy_hub(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show spy menu with cooldown status."""
+async def show_spy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Show spy menu"""
     query = update.callback_query
-    user_id = update.effective_user.id
+    
+    kingdom = GameData.get_kingdom(user_id)
+    
+    # Check cooldown
+    cooldown = GameData.get_cooldown(user_id, "spy")
+    cooldown_text = ""
+    if cooldown:
+        remaining = cooldown - datetime.utcnow()
+        mins = max(0, int(remaining.total_seconds() // 60))
+        cooldown_text = f"\n⏳ Cooldown: {mins}m left\n"
+    
+    text = "🕵️ **SPY MENU**\n"
+    text += f"━━━━━━━━━━━━━━\n"
+    text += f"💰 Spy Cost: {SPY_COST_GOLD} Gold\n"
+    text += cooldown_text
+    text += f"\n🕵️ Dusre kingdoms par spy bhejo!\n"
+    text += f"Intel quality: Basic → Detailed → Full\n"
+    text += f"⚠️ Trap mein pakde jaane ka khatra!"
+    
+    await query.edit_message_text(text, reply_markup=spy_menu_keyboard())
 
-    with get_db() as db:
-        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not k:
-            return await query.edit_message_text("❌ Error!")
 
-        # Check cooldown
-        cd = db.query(Cooldown).filter(
-            Cooldown.user_id == user_id,
-            Cooldown.action_type == "spy",
-        ).first()
+async def handle_spy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle spy callbacks"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.from_user.id
+    data = query.data
+    
+    if data == "menu_spy":
+        await show_spy_menu(update, context, user_id)
+    
+    elif data == "spy_send":
+        await start_spy_mission(update, context, user_id)
+    
+    elif data == "spy_history":
+        await show_spy_history(update, context, user_id)
+    
+    elif data.startswith("spy_target:"):
+        target_id = int(data.split(":")[1])
+        await execute_spy(update, context, user_id, target_id)
 
-        cooldown_text = ""
-        if cd and cd.expires_at and cd.expires_at > datetime.utcnow():
-            mins = int((cd.expires_at - datetime.utcnow()).total_seconds() / 60)
-            secs = int((cd.expires_at - datetime.utcnow()).total_seconds() % 60)
-            cooldown_text = f"\n⏳ Cooldown: {mins}m {secs}s"
 
+async def start_spy_mission(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Start spy mission - show targets"""
+    query = update.callback_query
+    
+    # Check cooldown
+    cooldown = GameData.get_cooldown(user_id, "spy")
+    if cooldown and cooldown > datetime.utcnow():
+        remaining = cooldown - datetime.utcnow()
+        mins = int(remaining.total_seconds() // 60)
+        await query.answer(f"⏳ {mins}m cooldown left!")
+        return
+    
+    # Find targets
+    targets = GameData.find_opponents(user_id, limit=5)
+    if not targets:
         await query.edit_message_text(
-            f"🕵️ **SPY AGENCY**\n\n"
-            f"Dushman ki secret info collect karo!\n\n"
-            f"💰 Cost: {SPY_COST_GOLD} Gold/spy\n"
-            f"⏳ Cooldown: {SPY_COOLDOWN_MINUTES} minutes\n"
-            f"📊 Reports: Last 5 saved\n"
-            f"{cooldown_text}",
-            parse_mode="Markdown",
-            reply_markup=spy_menu_keyboard(),
+            "❌ Koi spy target nahi mila!",
+            reply_markup=spy_menu_keyboard()
         )
+        return
+    
+    text = "🕵️ **SELECT TARGET**\n"
+    text += f"━━━━━━━━━━━━━━\n"
+    text += f"💰 Cost: {SPY_COST_GOLD} Gold\n\n"
+    
+    buttons = []
+    for target, power, distance in targets:
+        text += f"👑 {target.name} {target.flag} — Lv.{target.level}\n"
+        buttons.append([InlineKeyboardButton(
+            f"🕵️ Spy on {target.name}",
+            callback_data=f"spy_target:{target.user_id}"
+        )])
+    
+    buttons.append([InlineKeyboardButton("🔙 Back", callback_data="menu_spy")])
+    
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons))
 
 
-async def send_spy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send spy to a target — FIXED unified cooldown system."""
+async def execute_spy(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, target_id: int):
+    """Execute spy mission"""
     query = update.callback_query
-    user_id = update.effective_user.id
-
+    
     with get_db() as db:
-        k = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
-        if not k:
-            return await query.edit_message_text("❌ Error!")
-
-        # Check gold
-        if k.gold < SPY_COST_GOLD:
-            return await query.edit_message_text(
-                f"💰 **{SPY_COST_GOLD} Gold** chahiye!\n"
-                f"Balance: {k.gold}",
-                parse_mode="Markdown",
-                reply_markup=spy_menu_keyboard(),
+        spy_kingdom = db.query(Kingdom).filter(Kingdom.user_id == user_id).first()
+        target = db.query(Kingdom).filter(Kingdom.user_id == target_id).first()
+        
+        if not spy_kingdom or not target:
+            await query.answer("❌ Error!")
+            return
+        
+        if spy_kingdom.gold < SPY_COST_GOLD:
+            await query.answer(f"❌ {SPY_COST_GOLD} Gold chahiye!")
+            return
+        
+        # Deduct cost
+        spy_kingdom.gold -= SPY_COST_GOLD
+        spy_kingdom.spy_missions += 1
+        
+        # Set cooldown
+        GameData.set_cooldown(user_id, "spy", SPY_COOLDOWN_MINUTES)
+        
+        # Check for trap (simplified - 15% chance)
+        if random.random() < SPY_TRAP_CHANCE:
+            spy_kingdom.successful_spies += 0  # Failed
+            db.commit()
+            
+            await query.edit_message_text(
+                "💀 **SPY CAUGHT!**\n"
+                "━━━━━━━━━━━━━━\n\n"
+                f"Aapka spy {target.name} ke trap mein pakda gaya!\n"
+                "💰 Gold lost!\n"
+                "⏳ 1 hour cooldown!",
+                reply_markup=spy_menu_keyboard()
             )
-
-        # FIXED: Unified cooldown check using expires_at only
-        cd = db.query(Cooldown).filter(
-            Cooldown.user_id == user_id,
-            Cooldown.action_type == "spy",
-        ).first()
-
-        if cd and cd.expires_at and cd.expires_at > datetime.utcnow():
-            mins = int((cd.expires_at - datetime.utcnow()).total_seconds() / 60)
-            secs = int((cd.expires_at - datetime.utcnow()).total_seconds() % 60)
-            return await query.edit_message_text(
-                f"⏳ **Spy on Cooldown!**\n\n"
-                f"{mins}m {secs}s remaining\n\n"
-                f"Baad mein try karo!",
-                parse_mode="Markdown",
-                reply_markup=spy_menu_keyboard(),
+            
+            # Notify target
+            try:
+                await context.bot.send_message(
+                    chat_id=target_id,
+                    text=f"🕵️ **Spy Caught!**\n@{spy_kingdom.name} ne jaasoosi ki koshish ki!\nAapka trap kaam kar gaya! 🎉"
+                )
+            except Exception:
+                pass
+            return
+        
+        # Success chance
+        if random.random() > SPY_SUCCESS_BASE_CHANCE:
+            db.commit()
+            await query.edit_message_text(
+                "🕵️ **Spy Mission Failed!**\n"
+                "━━━━━━━━━━━━━━\n\n"
+                "Koi intel haasil nahi hua!\n"
+                "Target ka defense zyada tha!",
+                reply_markup=spy_menu_keyboard()
             )
-
-        # Get random target (similar level, different player)
-        target = _find_spy_target(db, k, user_id)
-        if not target:
-            return await query.edit_message_text(
-                "🔍 No suitable spy targets found!\n"
-                "Aur players join hone do!",
-                reply_markup=spy_menu_keyboard(),
-            )
-
-        # Deduct gold
-        k.gold -= SPY_COST_GOLD
-
-        # Set cooldown — FIXED: Consistent interface
-        if not cd:
-            cd = Cooldown(
-                user_id=user_id,
-                action_type="spy",
-                duration_minutes=SPY_COOLDOWN_MINUTES,
-                expires_at=datetime.utcnow() + timedelta(minutes=SPY_COOLDOWN_MINUTES),
-            )
-            db.add(cd)
-        else:
-            cd.expires_at = datetime.utcnow() + timedelta(minutes=SPY_COOLDOWN_MINUTES)
-            cd.duration_minutes = SPY_COOLDOWN_MINUTES
-
-        # Calculate accuracy based on kingdom level
-        accuracy = min(0.95, 0.50 + (k.level * 0.05))
-
-        # Generate spy report
-        report = SpyReport(
+            return
+        
+        # Successful spy
+        spy_kingdom.successful_spies += 1
+        
+        intel_level = random.choice(["basic", "detailed", "full"])
+        
+        report = f"🕵️ **SPY REPORT: {target.name} {target.flag}**\n"
+        report += "━━━━━━━━━━━━━━\n"
+        
+        if intel_level in ["basic", "detailed", "full"]:
+            report += f"⚔️ Army: ~{target.army.total if target.army else 0}\n"
+            report += f"🛡 Wall Level: {target.wall_level}\n"
+        
+        if intel_level in ["detailed", "full"]:
+            report += f"💰 Gold: ~{target.gold:,}\n"
+            report += f"🍖 Food: ~{target.food:,}\n"
+            report += f"⚡ Energy: {target.energy}/10\n"
+        
+        if intel_level == "full":
+            if target.army:
+                report += f"🗡 Infantry: {target.army.infantry}\n"
+                report += f"🏹 Archers: {target.army.archers}\n"
+                report += f"🐎 Cavalry: {target.army.cavalry}\n"
+            report += f"🛡 Shield: {target.shield_time_remaining}\n"
+        
+        report += "━━━━━━━━━━━━━━\n"
+        report += f"📊 Intel Quality: **{intel_level.upper()}**"
+        
+        # Save report
+        spy_report = SpyReport(
             spy_id=user_id,
-            target_id=target.user_id,
-            target_name=target.name,
-            army_total=target.army.total if target.army else 0,
-            infantry=target.army.infantry if target.army else 0,
-            archers=target.army.archers if target.army else 0,
-            cavalry=target.army.cavalry if target.army else 0,
-            attack_power=int((target.army.attack_power if target.army else 0) * accuracy),
-            defense_power=int((target.army.defense_power if target.army else 0) * accuracy),
-            gold=int(target.gold * accuracy),
-            food=int(target.food * accuracy),
-            accuracy=accuracy,
+            target_id=target_id,
+            intel_level=intel_level,
+            report_text=report,
+            success=1,
         )
-        db.add(report)
+        db.add(spy_report)
         db.commit()
-
-    # Visual spy report with accuracy bar
-    acc_bar = _render_bar(int(accuracy * 100), 100, 10)
-
-    await query.edit_message_text(
-        f"🕵️ **SPY REPORT**\n"
-        f"Target: **{target.name}** {target.flag}\n\n"
-        f"📊 Accuracy: {int(accuracy * 100)}%\n"
-        f"{acc_bar}\n\n"
-        f"🪖 **Army Intelligence:**\n"
-        f"   Total: ~{report.army_total} units\n"
-        f"   🗡 Infantry: ~{report.infantry}\n"
-        f"   🏹 Archers: ~{report.archers}\n"
-        f"   🐎 Cavalry: ~{report.cavalry}\n\n"
-        f"⚔ Attack: ~{report.attack_power}\n"
-        f"🛡 Defense: ~{report.defense_power}\n\n"
-        f"💰 Gold: ~{report.gold}\n"
-        f"🍖 Food: ~{report.food}\n"
-        f"🛡 Shield: {'Yes ⚠️' if target.has_shield else 'No ✅'}\n\n"
-        f"⏳ Next spy: {SPY_COOLDOWN_MINUTES} min",
-        parse_mode="Markdown",
-        reply_markup=spy_menu_keyboard(),
-    )
+    
+    await query.edit_message_text(report, reply_markup=spy_menu_keyboard())
 
 
-def _find_spy_target(db, kingdom, user_id):
-    """Find a suitable spy target."""
-    candidates = db.query(Kingdom).filter(
-        Kingdom.user_id != user_id,
-        Kingdom.level.between(max(1, kingdom.level - 5), kingdom.level + 5),
-    ).all()
-
-    valid = [c for c in candidates if not c.has_shield]
-    if valid:
-        import random
-        return random.choice(valid)
-    return None
-
-
-def _render_bar(value: int, maximum: int, width: int = 12, fill: str = "█", empty: str = "░") -> str:
-    """Render a horizontal bar."""
-    if maximum <= 0:
-        return empty * width
-    ratio = min(value / maximum, 1.0)
-    filled = int(round(ratio * width))
-    return fill * filled + empty * (width - filled)
-
-
-async def show_spy_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show spy history with visual timeline."""
+async def show_spy_history(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Show spy report history"""
     query = update.callback_query
-    user_id = update.effective_user.id
-
+    
     with get_db() as db:
-        reports = db.query(SpyReport).filter(
-            SpyReport.spy_id == user_id,
-        ).order_by(SpyReport.timestamp.desc()).limit(10).all()
-
-        if not reports:
-            return await query.edit_message_text(
-                "📭 No spy reports yet!\n\n"
-                "🕵️ Spy bhejo pehle!",
-                reply_markup=spy_menu_keyboard(),
-            )
-
-        lines = ["🕵️ **SPY HISTORY**\n"]
-        for r in reports:
-            time_ago = _time_ago(r.timestamp)
-            acc = int(r.accuracy * 100)
-            lines.append(
-                f"• {r.target_name}\n"
-                f"  ⚔~{r.attack_power} 💰~{r.gold} 🛡{'Yes' if r.shield else 'No'}\n"
-                f"  📊 {acc}% accuracy | {time_ago}"
-            )
-
+        reports = db.query(SpyReport).filter(SpyReport.spy_id == user_id).order_by(SpyReport.created_at.desc()).limit(5).all()
+    
+    if not reports:
         await query.edit_message_text(
-            "\n".join(lines),
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔙 Back", callback_data="menu_spy")],
-            ]),
+            "📜 **No Spy History**\n\nAbhi tak koi spy mission nahi!",
+            reply_markup=spy_menu_keyboard()
         )
-
-
-def _time_ago(timestamp) -> str:
-    """Human readable time ago."""
-    if not timestamp:
-        return "unknown"
-    delta = datetime.utcnow() - timestamp
-    if delta.days > 0:
-        return f"{delta.days}d ago"
-    hours = delta.seconds // 3600
-    if hours > 0:
-        return f"{hours}h ago"
-    mins = delta.seconds // 60
-    return f"{mins}m ago"
+        return
+    
+    text = "📜 **SPY HISTORY**\n━━━━━━━━━━━━━━\n\n"
+    for r in reports:
+        status = "✅" if r.success else "❌"
+        text += f"{status} Target: {r.target_id} — {r.intel_level.upper()}\n"
+        text += f"   {r.created_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+    
+    await query.edit_message_text(text, reply_markup=spy_menu_keyboard())
