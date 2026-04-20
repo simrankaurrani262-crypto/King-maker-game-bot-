@@ -1,333 +1,443 @@
+"""
+Combat Engine - Realistic battle simulation with proper formulas
+Fixed version with correct trait bonus application and balanced combat.
+"""
+
 import random
-from bot.utils.constants import (
-    RANDOM_FACTOR_RANGE, WALL_DEFENSE_REDUCTION_PER_LEVEL,
-    PROXIMITY_ATTACK_BONUS, KINGDOM_TRAITS
-)
+import logging
+from datetime import datetime
+
+from bot.utils.animations import BattleAnimator
+
+logger = logging.getLogger(__name__)
 
 
 class CombatEngine:
-    """Deterministic + RNG battle simulation engine"""
-    
-    def __init__(self, attacker, defender, is_revenge=False, is_raid=False, is_tutorial=False):
+    """
+    Realistic combat engine with:
+    - Rock-paper-scissors unit type advantages
+    - Trait bonuses properly applied
+    - Wall defense reduction
+    - Hero skill bonuses
+    - Critical hit system
+    - Morale system
+    - Detailed battle logs
+    """
+
+    # Unit stats (attack, defense, health, speed)
+    UNIT_STATS = {
+        "infantry": {"attack": 8, "defense": 12, "health": 15, "speed": 5},
+        "archers": {"attack": 15, "defense": 5, "health": 8, "speed": 8},
+        "cavalry": {"attack": 12, "defense": 8, "health": 12, "speed": 12},
+    }
+
+    # Type advantages: attacker -> defender modifier
+    TYPE_ADVANTAGES = {
+        "infantry": {"infantry": 1.0, "archers": 1.3, "cavalry": 0.7},
+        "archers": {"infantry": 0.8, "archers": 1.0, "cavalry": 1.4},
+        "cavalry": {"infantry": 1.3, "archers": 0.7, "cavalry": 1.0},
+    }
+
+    # Wall damage reduction per level
+    WALL_REDUCTION_PER_LEVEL = 0.03  # 3% per level
+
+    def __init__(self, attacker, defender, is_tutorial=False, is_revenge=False, is_raid=False):
         self.attacker = attacker
         self.defender = defender
+        self.is_tutorial = is_tutorial
         self.is_revenge = is_revenge
         self.is_raid = is_raid
-        self.is_tutorial = is_tutorial
         self.rounds = []
-        self.winner = None
-        self.attacker_losses = {"infantry": 0, "archers": 0, "cavalry": 0}
-        self.defender_losses = {"infantry": 0, "archers": 0, "cavalry": 0}
-        self.gold_loot = 0
-        self.xp_gain = 0
-    
-    def calculate_distance(self):
-        """Manhattan distance between kingdoms on map"""
-        return abs(self.attacker.map_x - self.defender.map_x) + abs(self.attacker.map_y - self.defender.map_y)
-    
-    def calculate_army_power(self, kingdom, is_attacker):
-        """Total army power with all modifiers"""
-        if not kingdom.army:
-            return 0
-        
-        infantry_power = kingdom.army.infantry * 10
-        archer_power = kingdom.army.archers * 12 * 1.1  # Range bonus
-        cavalry_power = kingdom.army.cavalry * 18 * 1.2  # Charge bonus
-        
-        base_power = infantry_power + archer_power + cavalry_power
-        
-        # Hero bonuses
-        hero_bonus = 0.0
-        for h in kingdom.heroes:
-            if h.unlocked:
-                if h.hero_type == "sir_aldric":
-                    hero_bonus += (0.15 + 0.03 * (h.level - 1)) * (kingdom.army.infantry / max(kingdom.army.total, 1))
-                elif h.hero_type == "lyra":
-                    hero_bonus += (0.20 + 0.04 * (h.level - 1)) * (kingdom.army.archers / max(kingdom.army.total, 1))
-                elif h.hero_type == "kael":
-                    hero_bonus += (0.25 + 0.05 * (h.level - 1)) * (kingdom.army.cavalry / max(kingdom.army.total, 1))
-                elif h.hero_type == "morgana":
-                    hero_bonus += 0.10  # AoE
-                elif h.hero_type == "shadow":
-                    hero_bonus += 0.30  # First strike
-        
-        base_power *= (1 + hero_bonus)
-        
-        # Kingdom trait bonus
-        trait = KINGDOM_TRAITS.get(kingdom.trait, {})
-        if is_attacker:
-            base_power *= (1 + trait.get("attack_bonus", 0))
-            base_power *= (1 + trait.get("attack_penalty", 0))
-        else:
-            base_power *= (1 + trait.get("defense_bonus", 0))
-            base_power *= (1 + trait.get("attack_penalty", 0))
-        
-        # Revenge bonus
-        if self.is_revenge and is_attacker:
-            base_power *= 1.10
-        
-        # Proximity bonus
-        distance = self.calculate_distance()
-        if distance <= 2:
-            base_power *= 1.10
-        elif distance <= 4:
-            base_power *= 1.05
-        
-        # Tutorial: attacker gets huge bonus
-        if self.is_tutorial and is_attacker:
-            base_power *= 3.0
-        
-        # RNG factor
-        rng = random.uniform(*RANDOM_FACTOR_RANGE)
-        base_power *= rng
-        
-        return int(base_power)
-    
-    def calculate_defense_power(self):
-        """Defender's effective defense"""
-        if not self.defender.army:
-            return {"total_defense": 0, "damage_reduction": 0, "wall_level": self.defender.wall_level}
-        
-        wall_reduction = self.defender.wall_level * WALL_DEFENSE_REDUCTION_PER_LEVEL
-        wall_multiplier = 1 + (self.defender.wall_level * 0.05)
-        
-        army_defense = (self.defender.army.infantry * 8 +
-                       self.defender.army.archers * 5 +
-                       self.defender.army.cavalry * 12)
-        
-        total_defense = army_defense * wall_multiplier
-        
-        # Damage reduction cap at 75%
-        damage_reduction = min(wall_reduction, 0.75)
-        
-        # Defender trait
-        trait = KINGDOM_TRAITS.get(self.defender.trait, {})
-        damage_reduction += trait.get("wall_bonus", 0)
-        damage_reduction = min(damage_reduction, 0.80)  # Hard cap
-        
-        # Hero defense bonuses
-        hero_defense = 0.0
-        for h in self.defender.heroes:
-            if h.unlocked:
-                hero_defense += 0.05 * h.level
-        total_defense *= (1 + hero_defense)
-        
-        return {
-            "total_defense": int(total_defense),
-            "damage_reduction": damage_reduction,
-            "wall_level": self.defender.wall_level,
-        }
-    
-    def generate_attack_action(self, round_num):
-        """Generate flavor text for attack actions"""
-        actions = [
-            f"Round {round_num} → 🗡 Infantry charges! ⚔️",
-            f"Round {round_num} → 🏹 Archers unleash volley! 🎯",
-            f"Round {round_num} → 🐎 Cavalry charge! 💨",
-            f"Round {round_num} → ⚔️ Combined assault! 🔥",
-            f"Round {round_num} → 🗡 Hero leads the charge! 👑",
-        ]
-        return actions[round_num % len(actions)]
-    
-    def generate_defense_action(self, round_num):
-        """Generate flavor text for defense actions"""
-        actions = [
-            f"Round {round_num} → 🛡 Wall holds strong! 🧱",
-            f"Round {round_num} → 🏹 Defenders counter-attack! ⚔️",
-            f"Round {round_num} → 🐎 Cavalry intercepts! 🛡",
-            f"Round {round_num} → ⚔️ Desperate stand! 🔥",
-        ]
-        return actions[round_num % len(actions)]
-    
-    def calculate_losses(self, kingdom, remaining_hp_ratio):
-        """Calculate army losses based on HP ratio"""
-        if not kingdom.army:
-            return {"infantry": 0, "archers": 0, "cavalry": 0}
-        
-        loss_ratio = max(0, min(1, 1 - remaining_hp_ratio))
-        
-        return {
-            "infantry": int(kingdom.army.infantry * loss_ratio * random.uniform(0.8, 1.0)),
-            "archers": int(kingdom.army.archers * loss_ratio * random.uniform(0.8, 1.0)),
-            "cavalry": int(kingdom.army.cavalry * loss_ratio * random.uniform(0.8, 1.0)),
-        }
-    
+        self.animator = BattleAnimator()
+
     def simulate_battle(self):
-        """Generate round-by-round battle log"""
-        attack_power = self.calculate_army_power(self.attacker, True)
-        defense_data = self.calculate_defense_power()
-        defense_power = defense_data["total_defense"]
-        damage_reduction = defense_data["damage_reduction"]
-        
-        effective_attack = int(attack_power * (1 - damage_reduction))
-        
-        # HP pools
-        attack_hp_total = self.attacker.army.total * 10 if self.attacker.army else 0
-        defense_hp_total = self.defender.army.total * 10 if self.defender.army else 0
-        
-        if attack_hp_total <= 0:
-            self.winner = "defender"
-            self._finalize_results(0, 0)
-            return self.generate_battle_report()
-        
-        if defense_hp_total <= 0:
-            self.winner = "attacker"
-            self._finalize_results(attack_hp_total, 0)
-            return self.generate_battle_report()
-        
-        attack_hp = attack_hp_total
-        defense_hp = defense_hp_total
-        
-        round_count = random.randint(3, 5)
-        
-        for round_num in range(1, round_count + 1):
-            # Attacker strikes
-            atk_damage = max(1, int(effective_attack / round_count * random.uniform(0.8, 1.2)))
-            defense_hp -= atk_damage
-            
-            self.rounds.append({
-                "round": round_num,
-                "action": self.generate_attack_action(round_num),
-                "damage": atk_damage,
-                "attacker_remaining": max(attack_hp, 0),
-                "defender_remaining": max(defense_hp, 0),
-            })
-            
-            if defense_hp <= 0:
+        """Run full battle simulation"""
+        # Get armies safely
+        atk_army = self._get_army_dict(self.attacker)
+        def_army = self._get_army_dict(self.defender)
+
+        # Calculate total army sizes
+        atk_total = sum(atk_army.values())
+        def_total = sum(def_army.values())
+
+        if atk_total == 0:
+            return self._create_result("defender", 0, 0, atk_army, def_army, "Attacker has no army!")
+        if def_total == 0:
+            return self._create_result("attacker", 100, 50, atk_army, def_army, "Defender has no army! Easy win!")
+
+        # Get trait bonuses
+        atk_trait = self._get_trait(self.attacker)
+        def_trait = self._get_trait(self.defender)
+
+        atk_bonuses = self._calculate_trait_bonuses(atk_trait, "attacker")
+        def_bonuses = self._calculate_trait_bonuses(def_trait, "defender")
+
+        # Get wall defense
+        wall_level = getattr(self.defender, 'wall_level', 1)
+        wall_reduction = wall_level * self.WALL_REDUCTION_PER_LEVEL
+
+        # Get hero bonuses
+        atk_hero_bonus = self._calculate_hero_bonus(self.attacker, "attack")
+        def_hero_bonus = self._calculate_hero_bonus(self.defender, "defense")
+
+        # Calculate base power
+        atk_power = self._calculate_army_power(atk_army, atk_bonuses, atk_hero_bonus, is_attacker=True)
+        def_power = self._calculate_army_power(def_army, def_bonuses, def_hero_bonus, is_attacker=False)
+
+        # Apply wall to defender
+        def_power = int(def_power * (1 + wall_reduction))
+
+        # Simulate rounds (up to 10 rounds)
+        current_atk = dict(atk_army)
+        current_def = dict(def_army)
+        max_rounds = 5 if self.is_raid else 10
+
+        for round_num in range(1, max_rounds + 1):
+            if sum(current_atk.values()) <= 0 or sum(current_def.values()) <= 0:
                 break
-            
-            # Defender counter-strikes
-            def_damage = max(1, int(defense_power / round_count * random.uniform(0.7, 1.1)))
-            attack_hp -= def_damage
-            
-            self.rounds.append({
-                "round": round_num,
-                "action": self.generate_defense_action(round_num),
-                "damage": def_damage,
-                "attacker_remaining": max(attack_hp, 0),
-                "defender_remaining": max(defense_hp, 0),
-            })
-            
-            if attack_hp <= 0:
-                break
-        
+
+            round_result = self._simulate_round(
+                round_num, current_atk, current_def,
+                atk_power, def_power, atk_bonuses, def_bonuses
+            )
+            self.rounds.append(round_result)
+
+            current_atk = round_result["attacker_remaining"]
+            current_def = round_result["defender_remaining"]
+
         # Determine winner
-        if defense_hp <= 0 or (attack_hp > 0 and attack_hp > defense_hp):
-            self.winner = "attacker"
+        atk_remaining_total = sum(current_atk.values())
+        def_remaining_total = sum(current_def.values())
+
+        if atk_remaining_total > def_remaining_total:
+            winner = "attacker"
+        elif def_remaining_total > atk_remaining_total:
+            winner = "defender"
         else:
-            self.winner = "defender"
-        
+            winner = "defender"  # Defender wins ties (home advantage)
+
         # Calculate losses
-        attack_hp_ratio = max(0, attack_hp) / attack_hp_total if attack_hp_total > 0 else 0
-        defense_hp_ratio = max(0, defense_hp) / defense_hp_total if defense_hp_total > 0 else 0
-        
-        self.attacker_losses = self.calculate_losses(self.attacker, attack_hp_ratio)
-        self.defender_losses = self.calculate_losses(self.defender, defense_hp_ratio)
-        
-        return self.generate_battle_report()
-    
-    def _finalize_results(self, attack_hp, defense_hp):
-        """Finalize results when one side has no army"""
-        attack_hp_total = max(1, self.attacker.army.total * 10) if self.attacker.army else 1
-        defense_hp_total = max(1, self.defender.army.total * 10) if self.defender.army else 1
-        
-        attack_ratio = max(0, attack_hp) / attack_hp_total
-        defense_ratio = max(0, defense_hp) / defense_hp_total
-        
-        self.attacker_losses = self.calculate_losses(self.attacker, attack_ratio)
-        self.defender_losses = self.calculate_losses(self.defender, defense_ratio)
-    
-    def generate_battle_report(self):
-        """Format final battle report message"""
-        if self.winner == "attacker":
-            result_emoji = "🏆 VICTORY!"
-            self.gold_loot = int(self.defender.gold * 0.20)  # 20% gold stolen
-            self.xp_gain = 100 + (self.defender.level * 20)
-        else:
-            result_emoji = "💀 DEFEAT!"
-            self.gold_loot = 0
-            self.xp_gain = 25  # Participation XP
-        
-        rounds_text = "\n".join(
-            f"{r['action']}\n💥 {r['damage']} damage | ⚔️ {r['attacker_remaining']} vs 🛡 {r['defender_remaining']}"
-            for r in self.rounds
-        ) if self.rounds else "⚡ Instant battle!"
-        
-        report = f"""⚔️ BATTLE REPORT
-━━━━━━━━━━━━━━
-{result_emoji}
+        atk_losses = self._calculate_losses(atk_army, current_atk)
+        def_losses = self._calculate_losses(def_army, current_def)
 
-{self.attacker.name} ⚔️ vs 🛡 {self.defender.name}
+        # Calculate rewards
+        gold_loot, xp_gain = self._calculate_rewards(winner, def_army, def_losses)
 
-⚔️ Rounds:
-{rounds_text}
+        # Generate battle message
+        message = self._generate_battle_message(
+            winner, gold_loot, xp_gain, atk_losses, def_losses,
+            self.attacker, self.defender
+        )
 
-💀 Losses:
-Attacker: 🗡-{self.attacker_losses['infantry']} 🏹-{self.attacker_losses['archers']} 🐎-{self.attacker_losses['cavalry']}
-Defender: 🗡-{self.defender_losses['infantry']} 🏹-{self.defender_losses['archers']} 🐎-{self.defender_losses['cavalry']}
+        # Generate battle animation
+        battle_animation = self.animator.create_battle_animation(
+            self.attacker, self.defender, winner, self.rounds
+        )
 
-🏆 Rewards:
-💰 +{self.gold_loot:,} Gold
-⭐ +{self.xp_gain} XP
-━━━━━━━━━━━━━━"""
-        
-        return {
-            "message": report,
-            "winner": self.winner,
-            "gold_loot": self.gold_loot,
-            "xp_gain": self.xp_gain,
-            "rounds": self.rounds,
-            "attacker_losses": self.attacker_losses,
-            "defender_losses": self.defender_losses,
-        }
-    
+        return self._create_result(
+            winner, gold_loot, xp_gain, atk_losses, def_losses,
+            message, battle_animation
+        )
+
     def simulate_raid(self):
-        """Quick raid calculation (no rounds)"""
-        raid_power = self.attacker.army.total * 5 if self.attacker.army else 0
-        defense_power = self.defender.wall_level * 20 + (self.defender.army.total * 3 if self.defender.army else 0)
-        
-        success_chance = min(0.9, raid_power / (raid_power + defense_power)) if (raid_power + defense_power) > 0 else 0.5
-        
-        if self.is_tutorial:
-            success_chance = 1.0
-        
-        success = random.random() < success_chance
-        
+        """Quick raid simulation (simplified, 1 round)"""
+        atk_army = self._get_army_dict(self.attacker)
+        def_army = self._get_army_dict(self.defender)
+
+        atk_total = sum(atk_army.values())
+        def_total = sum(def_army.values())
+
+        # Quick power comparison
+        atk_trait = self._get_trait(self.attacker)
+        def_trait = self._get_trait(self.defender)
+
+        atk_power = self._calculate_quick_power(atk_army, atk_trait)
+        def_power = self._calculate_quick_power(def_army, def_trait)
+
+        # Raid: max 15% resources stolen
+        success = atk_power > def_power * 0.6
+
+        defender_gold = getattr(self.defender, 'gold', 0)
+        defender_food = getattr(self.defender, 'food', 0)
+
         if success:
-            gold_stolen = int(self.defender.gold * 0.15)
-            food_stolen = int(self.defender.food * 0.15)
-            army_loss = int(self.attacker.army.total * 0.05) if self.attacker.army else 0
-            
-            report = f"""🏃 RAID SUCCESS!
-━━━━━━━━━━━━━━
-💰 +{gold_stolen:,} Gold stolen!
-🍖 +{food_stolen:,} Food stolen!
-💀 Army lost: {army_loss}
-━━━━━━━━━━━━━━"""
-            
-            return {
-                "message": report,
-                "success": True,
-                "gold_stolen": gold_stolen,
-                "food_stolen": food_stolen,
-                "army_loss": army_loss,
-            }
+            gold_stolen = int(defender_gold * 0.15)
+            food_stolen = int(defender_food * 0.10)
+            army_loss = max(1, int(atk_total * 0.05))
         else:
-            army_loss = int(self.attacker.army.total * 0.10) if self.attacker.army else 0
-            report = f"""❌ RAID FAIL!
-━━━━━━━━━━━━━━
-Guard ne pakad liya!
-💀 Army lost: {army_loss}
-━━━━━━━━━━━━━━"""
+            gold_stolen = 0
+            food_stolen = 0
+            army_loss = max(1, int(atk_total * 0.15))
+
+        # Generate raid message
+        if success:
+            message = (
+                f"🏃 **RAID SUCCESSFUL!**\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"💰 +{gold_stolen:,} Gold stolen!\n"
+                f"🍖 +{food_stolen:,} Food stolen!\n"
+                f"💀 Army loss: {army_loss} units\n\n"
+                f"@{getattr(self.defender, 'name', 'Unknown')} ka thoda maal chura liya!"
+            )
+        else:
+            message = (
+                f"❌ **RAID FAILED!**\n"
+                f"━━━━━━━━━━━━━━\n\n"
+                f"Defender zyada strong tha!\n"
+                f"💀 Army loss: {army_loss} units\n\n"
+                f"Agli baar zyada army leke jao!"
+            )
+
+        return {
+            "success": success,
+            "gold_stolen": gold_stolen,
+            "food_stolen": food_stolen,
+            "army_loss": army_loss,
+            "message": message,
+        }
+
+    def _get_army_dict(self, kingdom):
+        """Safely get army as a dictionary"""
+        army = getattr(kingdom, 'army', None)
+        if army:
             return {
-                "message": report,
-                "success": False,
-                "gold_stolen": 0,
-                "food_stolen": 0,
-                "army_loss": army_loss,
+                "infantry": getattr(army, 'infantry', 0),
+                "archers": getattr(army, 'archers', 0),
+                "cavalry": getattr(army, 'cavalry', 0),
             }
-    
-    def simulate_npc_battle(self):
-        """Simulate battle against NPC (weaker)"""
-        self.is_tutorial = True
-        return self.simulate_battle()
+        return {"infantry": 0, "archers": 0, "cavalry": 0}
+
+    def _get_trait(self, kingdom):
+        """Safely get kingdom trait"""
+        return getattr(kingdom, 'trait', 'balanced')
+
+    def _calculate_trait_bonuses(self, trait, role):
+        """Calculate combat bonuses from traits"""
+        bonuses = {"attack": 1.0, "defense": 1.0, "morale": 1.0}
+
+        if trait == "aggressive":
+            if role == "attacker":
+                bonuses["attack"] = 1.25
+                bonuses["morale"] = 1.15
+            else:
+                bonuses["attack"] = 1.10
+        elif trait == "defensive":
+            if role == "defender":
+                bonuses["defense"] = 1.30
+                bonuses["morale"] = 1.10
+            else:
+                bonuses["defense"] = 1.15
+        elif trait == "rich":
+            bonuses["morale"] = 1.10  # Rich kingdoms have better equipped soldiers
+        elif trait == "balanced":
+            bonuses["attack"] = 1.08
+            bonuses["defense"] = 1.08
+
+        return bonuses
+
+    def _calculate_hero_bonus(self, kingdom, bonus_type):
+        """Calculate hero skill bonus"""
+        heroes = getattr(kingdom, 'heroes', [])
+        if not heroes:
+            return 1.0
+
+        bonus = 1.0
+        for hero in heroes:
+            if getattr(hero, 'unlocked', False):
+                level = getattr(hero, 'level', 0)
+                hero_type = getattr(hero, 'hero_type', '')
+
+                if bonus_type == "attack" and hero_type in ['arthur', 'lancelot']:
+                    bonus += 0.05 * level
+                elif bonus_type == "defense" and hero_type in ['merlin', 'guinevere']:
+                    bonus += 0.05 * level
+                elif bonus_type == "attack" and hero_type == 'morgana':
+                    bonus += 0.08 * level
+
+        return bonus
+
+    def _calculate_army_power(self, army_dict, bonuses, hero_bonus, is_attacker=True):
+        """Calculate total army power with all modifiers"""
+        total = 0
+        for unit_type, count in army_dict.items():
+            if count <= 0:
+                continue
+            stats = self.UNIT_STATS.get(unit_type, {"attack": 10, "defense": 10, "health": 10})
+
+            if is_attacker:
+                unit_power = stats["attack"] * stats["speed"] * count
+            else:
+                unit_power = stats["defense"] * stats["health"] * count
+
+            total += unit_power
+
+        # Apply bonuses
+        if is_attacker:
+            total = int(total * bonuses["attack"] * hero_bonus)
+        else:
+            total = int(total * bonuses["defense"] * hero_bonus)
+
+        return total
+
+    def _calculate_quick_power(self, army_dict, trait):
+        """Quick power calculation for raids"""
+        total = 0
+        for unit_type, count in army_dict.items():
+            stats = self.UNIT_STATS.get(unit_type, {"attack": 10, "defense": 10, "health": 10})
+            total += (stats["attack"] + stats["defense"]) * count
+
+        # Apply simple trait bonus
+        trait_multipliers = {"aggressive": 1.15, "defensive": 1.10, "rich": 1.05, "balanced": 1.08}
+        total = int(total * trait_multipliers.get(trait, 1.0))
+
+        return total
+
+    def _simulate_round(self, round_num, atk_army, def_army, atk_power, def_power, atk_bonuses, def_bonuses):
+        """Simulate a single combat round"""
+        atk_total = sum(atk_army.values())
+        def_total = sum(def_army.values())
+
+        if atk_total == 0 or def_total == 0:
+            return {
+                "round": round_num,
+                "attacker_remaining": dict(atk_army),
+                "defender_remaining": dict(def_army),
+                "description": "Battle over!"
+            }
+
+        # Calculate casualties based on power ratio
+        power_ratio = atk_power / (def_power + 1)  # +1 to avoid division by zero
+
+        # Attacker casualties (defender fighting back)
+        def_casualty_rate = min(0.35, 0.15 * (1 / max(power_ratio, 0.5)))
+        atk_casualty_rate = min(0.35, 0.15 * power_ratio)
+
+        # Apply morale
+        def_casualty_rate *= atk_bonuses.get("morale", 1.0)
+        atk_casualty_rate *= def_bonuses.get("morale", 1.0)
+
+        # Random variation (+-20%)
+        def_casualty_rate *= random.uniform(0.8, 1.2)
+        atk_casualty_rate *= random.uniform(0.8, 1.2)
+
+        # Critical hit chance (10%)
+        if random.random() < 0.1:
+            def_casualty_rate *= 1.5  # 50% more damage
+
+        # Apply type advantages
+        def_remaining = {}
+        for unit_type in def_army:
+            advantage = self.TYPE_ADVANTAGES.get("infantry", {}).get(unit_type, 1.0)
+            loss = int(def_army[unit_type] * def_casualty_rate * advantage)
+            def_remaining[unit_type] = max(0, def_army[unit_type] - loss)
+
+        atk_remaining = {}
+        for unit_type in atk_army:
+            loss = int(atk_army[unit_type] * atk_casualty_rate)
+            atk_remaining[unit_type] = max(0, atk_army[unit_type] - loss)
+
+        description = f"Round {round_num}: Both sides exchange blows!"
+        if random.random() < 0.1:
+            description = f"Round {round_num}: Critical hit! Heavy damage!"
+
+        return {
+            "round": round_num,
+            "attacker_remaining": atk_remaining,
+            "defender_remaining": def_remaining,
+            "description": description,
+        }
+
+    def _calculate_losses(self, original, remaining):
+        """Calculate unit losses"""
+        return {
+            "infantry": max(0, original.get("infantry", 0) - remaining.get("infantry", 0)),
+            "archers": max(0, original.get("archers", 0) - remaining.get("archers", 0)),
+            "cavalry": max(0, original.get("cavalry", 0) - remaining.get("cavalry", 0)),
+        }
+
+    def _calculate_rewards(self, winner, def_army, def_losses):
+        """Calculate gold loot and XP gain"""
+        if winner != "attacker":
+            return 0, 10  # Participation XP
+
+        def_total = sum(def_army.values())
+        total_losses = sum(def_losses.values())
+
+        # Gold loot based on defender's total army
+        gold_loot = min(5000, max(100, def_total * 10 + total_losses * 5))
+
+        # Tutorial bonus
+        if self.is_tutorial:
+            gold_loot = min(gold_loot, 500)
+
+        # Revenge bonus
+        if self.is_revenge:
+            gold_loot = int(gold_loot * 1.5)
+
+        # XP gain
+        xp_gain = min(500, max(25, total_losses * 2 + 50))
+        if self.is_tutorial:
+            xp_gain = min(xp_gain, 100)
+
+        return gold_loot, xp_gain
+
+    def _generate_battle_message(self, winner, gold_loot, xp_gain, atk_losses, def_losses, attacker, defender):
+        """Generate formatted battle result message"""
+        atk_name = getattr(attacker, 'name', 'Unknown')
+        def_name = getattr(defender, 'name', 'Unknown')
+        atk_flag = getattr(attacker, 'flag', '')
+        def_flag = getattr(defender, 'flag', '')
+
+        # Battle animation frames
+        animation_frames = [
+            "⚔️", "🔥", "💥", "⚡", "🗡",
+        ]
+        battle_anim = " ".join(animation_frames)
+
+        if winner == "attacker":
+            title = f"🏆 **VICTORY!** {battle_anim}"
+            result_text = (
+                f"✅ {atk_name} {atk_flag} ne {def_name} {def_flag} ko hara diya!\n"
+                f"💰 +{gold_loot:,} Gold looted!\n"
+                f"⭐ +{xp_gain} XP gained!"
+            )
+        else:
+            title = f"💀 **DEFEAT!** {battle_anim}"
+            result_text = (
+                f"❌ {atk_name} {atk_flag} ka hamla fail ho gaya!\n"
+                f"{def_name} {def_flag} ne successfully defend kiya!\n"
+                f"⭐ +{xp_gain} XP (participation)"
+            )
+
+        losses_text = (
+            f"\n\n📊 **Battle Report:**\n"
+            f"━━━━━━━━━━━━━━\n"
+            f"⚔️ Attacker Losses:\n"
+            f"   🗡 Infantry: -{atk_losses.get('infantry', 0)}\n"
+            f"   🏹 Archers: -{atk_losses.get('archers', 0)}\n"
+            f"   🐎 Cavalry: -{atk_losses.get('cavalry', 0)}\n\n"
+            f"🛡 Defender Losses:\n"
+            f"   🗡 Infantry: -{def_losses.get('infantry', 0)}\n"
+            f"   🏹 Archers: -{def_losses.get('archers', 0)}\n"
+            f"   🐎 Cavalry: -{def_losses.get('cavalry', 0)}"
+        )
+
+        message = f"{title}\n━━━━━━━━━━━━━━\n\n{result_text}{losses_text}"
+
+        if self.is_revenge:
+            message += "\n\n🔥 **REVENGE BONUS!** 1.5x loot!"
+
+        return message
+
+    def _create_result(self, winner, gold_loot, xp_gain, atk_losses, def_losses, message, animation=""):
+        """Create standardized battle result"""
+        return {
+            "winner": winner,
+            "gold_loot": gold_loot,
+            "xp_gain": xp_gain,
+            "attacker_losses": atk_losses,
+            "defender_losses": def_losses,
+            "message": message,
+            "animation": animation,
+            "rounds": self.rounds,
+        }
