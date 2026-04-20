@@ -391,7 +391,7 @@ async def npc_attack_task(context: ContextTypes.DEFAULT_TYPE):
         if random.random() > config.NPC_ATTACK_CHANCE:
             return
         
-        from bot.models import get_db, Kingdom, Army, Battle
+        from bot.models import get_db, Kingdom, Army, Battle, Building
         from bot.services.combat_engine import CombatEngine
         import json
         
