@@ -169,7 +169,7 @@ class ProgressBar:
         else:
             fill = "🟥"
 
-        return f"{fill * filled}⬜{empty * length}"[:length*2] + f" {percent}%"
+        return f"{fill * filled}⬜{empty * length}"[:length] + f" {percent}%"
 
     @staticmethod
     def create_with_label(percent: int, label: str, length: int = 12) -> str:
