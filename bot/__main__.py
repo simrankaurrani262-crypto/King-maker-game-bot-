@@ -34,8 +34,8 @@ def main():
     logger.info("Database initialized.")
 
     # Check bot token
-    if not config.BOT_TOKEN:
-        logger.error("BOT_TOKEN missing in config!")
+    if not config.TELEGRAM_BOT_TOKEN:
+        logger.error("TELEGRAM_BOT_TOKEN missing in config!")
         sys.exit(1)
 
     from telegram.ext import Application
