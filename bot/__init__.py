@@ -1,10 +1,10 @@
 """
-Kingdom Conquest - Advanced Telegram Game Bot
-A next-level kingdom building and battle game with realistic mechanics,
-visual effects, charts, and animations.
-
-Version: 2.0.0
+King Maker Game Bot
+A comprehensive Telegram-based kingdom building game.
 """
 
-__version__ = "2.0.0"
-__author__ = "Kingdom Bot Team"
+__version__ = "1.1.0-fixed"
+__author__ = "Game Team"
+
+# Export package version
+__all__ = ["__version__"]
