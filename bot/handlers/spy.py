@@ -9,8 +9,8 @@ from bot.utils.keyboards import spy_menu_keyboard, back_dashboard_keyboard
 from bot.utils.constants import SPY_COST_GOLD, SPY_SUCCESS_BASE_CHANCE, SPY_TRAP_CHANCE, SPY_COOLDOWN_MINUTES
 
 
-async def show_spy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
-    """Show spy menu"""
+async def show_spy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, target_id: int = None):
+    """Show spy menu - if target_id provided, shows spy options for that target"""
     query = update.callback_query
     
     kingdom = GameData.get_kingdom_with_relations(user_id)
@@ -32,6 +32,36 @@ async def show_spy_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     text += f"⚠️ Trap mein pakde jaane ka khatra!"
     
     await query.edit_message_text(text, reply_markup=spy_menu_keyboard())
+
+
+# ═══════════════════════════════════════════
+# ROUTER COMPATIBILITY WRAPPERS
+# ═══════════════════════════════════════════
+
+async def show_spy_hub(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for spy hub menu"""
+    await show_spy_menu(update, context, user_id)
+
+
+async def find_spy_target(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Find a random target to spy on"""
+    query = update.callback_query
+
+    kingdom = GameData.get_kingdom_with_relations(user_id)
+    if not kingdom:
+        return
+
+    # Find a random opponent
+    from bot.models import Kingdom as KingdomModel
+    with get_db() as db:
+        opponents = db.query(KingdomModel).filter(KingdomModel.user_id != user_id).all()
+        if not opponents:
+            await query.answer("❌ No opponents found!", show_alert=True)
+            return
+        target = random.choice(opponents)
+
+    # Execute spy mission directly
+    await execute_spy(update, context, user_id, target.user_id)
 
 
 async def handle_spy_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

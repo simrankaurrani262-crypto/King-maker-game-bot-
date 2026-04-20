@@ -576,3 +576,30 @@ async def execute_raid(update: Update, context: ContextTypes.DEFAULT_TYPE, user_
         )
     except Exception:
         pass
+
+
+# ═══════════════════════════════════════════
+# ROUTER COMPATIBILITY WRAPPERS
+# ═══════════════════════════════════════════
+
+async def show_revenge_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for revenge menu"""
+    await show_revenge(update, context, user_id)
+
+
+async def show_battle_response(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, target_id: int):
+    """Show battle response/initiate attack on a target"""
+    await initiate_attack(update, context, user_id, target_id)
+
+
+async def handle_battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Handle battle accept/decline callbacks"""
+    query = update.callback_query
+    data = query.data
+
+    if data.startswith("battle_accept:"):
+        request_id = data.split(":")[1]
+        await accept_battle(update, context, request_id)
+    elif data.startswith("battle_decline:"):
+        request_id = data.split(":")[1]
+        await decline_battle(update, context, request_id)

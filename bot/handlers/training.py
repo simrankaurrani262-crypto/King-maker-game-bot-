@@ -1,6 +1,6 @@
 """
-Training Handler - Army training center
-NEW FEATURE: Train infantry, archers, and cavalry with realistic costs and times.
+Training Handler - Army training center.
+Fixed version with proper variable references.
 """
 
 from datetime import datetime, timedelta
@@ -21,7 +21,7 @@ async def show_training_menu(update: Update, context: ContextTypes.DEFAULT_TYPE,
     kingdom = GameData.get_kingdom_with_relations(user_id)
     if not kingdom:
         text = "❌ Kingdom not found!"
-        if query:
+        if query and not new_message:
             await query.edit_message_text(text, reply_markup=back_dashboard_keyboard())
         else:
             await context.bot.send_message(chat_id=user_id, text=text, reply_markup=back_dashboard_keyboard())
@@ -104,7 +104,7 @@ async def show_train_amount(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         f"{unit_name} **TRAINING**\n"
         "━━━━━━━━━━━━━━\n\n"
         f"💰 Cost per unit: {cost['gold']} Gold, {cost['food']} Food\n"
-        f"⏱ Time per unit: {cost['time']} min\n\n"
+        f"⏱ Time per unit: {cost.get('time', 0)} min\n\n"
         f"💰 Your Gold: {getattr(kingdom, 'gold', 0):,}\n"
         f"🍖 Your Food: {getattr(kingdom, 'food', 0):,}\n\n"
         "Select amount:"
@@ -153,7 +153,7 @@ async def execute_training(update: Update, context: ContextTypes.DEFAULT_TYPE, u
         # Deduct resources
         kingdom.gold -= cost['gold']
         kingdom.food -= cost['food']
-        kingdom.soldiers_trained += amount
+        kingdom.soldiers_trained = getattr(kingdom, 'soldiers_trained', 0) + amount
 
         # Add units
         if unit_type == "infantry":
@@ -168,13 +168,14 @@ async def execute_training(update: Update, context: ContextTypes.DEFAULT_TYPE, u
     unit_names = {"infantry": "🗡 Infantry", "archers": "🏹 Archers", "cavalry": "🐎 Cavalry"}
     unit_name = unit_names.get(unit_type, unit_type)
 
+    time_minutes = cost.get('time', 0)
     text = (
         f"✅ **TRAINING COMPLETE!**\n"
         "━━━━━━━━━━━━━━\n\n"
         f"{unit_name} x**{amount}** trained!\n\n"
         f"💰 Gold used: {cost['gold']:,}\n"
         f"🍖 Food used: {cost['food']:,}\n"
-        f"⏱ Training time: {cost['time_minutes']} min\n\n"
+        f"⏱ Training time: {time_minutes} min\n\n"
         f"⚔️ New {unit_name} total: {getattr(army, unit_type, 0):,}"
     )
 

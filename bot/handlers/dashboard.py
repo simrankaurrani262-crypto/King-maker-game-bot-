@@ -164,6 +164,17 @@ async def handler_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await render_dashboard(update, context, update.effective_user.id, new_message=True)
 
 
+# Alias for router compatibility
+async def dashboard_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/dashboard command entry point"""
+    await handler_dashboard(update, context)
+
+
+async def show_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Show dashboard wrapper for callback router"""
+    await render_dashboard(update, context, user_id)
+
+
 # ─── Dashboard Callback Router ───
 
 async def handle_dashboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

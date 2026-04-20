@@ -40,6 +40,20 @@ async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE, u
     await query.edit_message_text(text, reply_markup=leaderboard_keyboard())
 
 
+# ═══════════════════════════════════════════
+# ROUTER COMPATIBILITY WRAPPERS
+# ═══════════════════════════════════════════
+
+async def show_leaderboard_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for leaderboard menu"""
+    await show_leaderboard(update, context, user_id)
+
+
+async def show_player_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Show player leaderboard - wrapper around show_leaderboard"""
+    await show_leaderboard(update, context, user_id)
+
+
 async def handle_leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle leaderboard callbacks"""
     query = update.callback_query

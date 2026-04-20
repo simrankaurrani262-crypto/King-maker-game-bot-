@@ -74,7 +74,7 @@ async def handle_alliance_callback(update: Update, context: ContextTypes.DEFAULT
     
     elif data.startswith("alliance_members:"):
         alliance_id = int(data.split(":")[1])
-        await show_alliance_members(update, context, alliance_id)
+        await show_alliance_members(update, context, user_id, alliance_id)
     
     elif data.startswith("alliance_donate:"):
         alliance_id = int(data.split(":")[1])
@@ -215,7 +215,7 @@ async def join_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE, user
     await show_alliance_hub(update, context, user_id)
 
 
-async def show_alliance_members(update: Update, context: ContextTypes.DEFAULT_TYPE, alliance_id: int):
+async def show_alliance_members(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, alliance_id: int):
     """Show alliance members"""
     query = update.callback_query
     
@@ -282,3 +282,32 @@ async def leave_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE, use
     
     await query.answer("🚪 Alliance chhod diya!")
     await show_alliance_hub(update, context, user_id)
+
+
+# ═══════════════════════════════════════════
+# ROUTER COMPATIBILITY WRAPPERS
+# ═══════════════════════════════════════════
+
+async def show_alliance_create(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for alliance creation flow"""
+    await start_alliance_creation(update, context, user_id)
+
+
+async def show_alliance_list(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for showing open alliances"""
+    await show_open_alliances(update, context, user_id)
+
+
+async def show_donate_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, alliance_id: int):
+    """Wrapper for alliance donation"""
+    await donate_to_alliance(update, context, user_id, alliance_id)
+
+
+async def handle_alliance_leave(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, alliance_id: int):
+    """Wrapper for leaving alliance"""
+    await leave_alliance(update, context, user_id, alliance_id)
+
+
+async def handle_join_alliance(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, alliance_id: int):
+    """Wrapper for joining alliance"""
+    await join_alliance(update, context, user_id, alliance_id)

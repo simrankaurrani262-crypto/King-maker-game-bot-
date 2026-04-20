@@ -194,3 +194,27 @@ async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id:
     )
 
     await query.edit_message_text(help_text, reply_markup=back_dashboard_keyboard())
+
+
+# ═══════════════════════════════════════════
+# ROUTER COMPATIBILITY WRAPPERS
+# ═══════════════════════════════════════════
+
+async def show_title_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for title settings"""
+    await show_title_settings(update, context, user_id)
+
+
+async def show_language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for language settings"""
+    await show_language_settings(update, context, user_id)
+
+
+async def show_help_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Wrapper for help display"""
+    await show_help(update, context, user_id)
+
+
+async def toggle_setting(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, toggle_type: str):
+    """Wrapper for toggling notification settings"""
+    await toggle_notification(update, context, user_id, toggle_type)

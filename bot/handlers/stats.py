@@ -120,15 +120,15 @@ async def handle_stats_callback(update: Update, context: ContextTypes.DEFAULT_TY
     
     try:
         if data == "stats_summary":
-            await _show_full_summary(query, user_id)
+            await _show_full_summary_impl(query, user_id)
         elif data == "stats_army":
-            await _show_army_chart(query, user_id)
+            await _show_army_chart_impl(query, user_id)
         elif data == "stats_battles":
-            await _show_battle_stats(query, user_id)
+            await _show_battle_stats_impl(query, user_id)
         elif data == "stats_buildings":
-            await _show_building_stats(query, user_id)
+            await _show_building_stats_impl(query, user_id)
         elif data == "stats_resources":
-            await _show_resource_stats(query, user_id)
+            await _show_resource_stats_impl(query, user_id)
         elif data == "stats_menu":
             await show_stats_menu(update, context, user_id)
         else:
@@ -141,7 +141,37 @@ async def handle_stats_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ─── Detailed Stat Views ───
 
-async def _show_full_summary(query, user_id: int):
+async def show_full_summary(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Public wrapper for full summary"""
+    query = update.callback_query
+    await _show_full_summary_impl(query, user_id)
+
+
+async def show_army_chart(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Public wrapper for army chart"""
+    query = update.callback_query
+    await _show_army_chart_impl(query, user_id)
+
+
+async def show_battle_history(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Public wrapper for battle history"""
+    query = update.callback_query
+    await _show_battle_stats_impl(query, user_id)
+
+
+async def show_building_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Public wrapper for building stats"""
+    query = update.callback_query
+    await _show_building_stats_impl(query, user_id)
+
+
+async def show_resource_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+    """Public wrapper for resource stats"""
+    query = update.callback_query
+    await _show_resource_stats_impl(query, user_id)
+
+
+async def _show_full_summary_impl(query, user_id: int):
     """Show full kingdom summary with chart"""
     try:
         kingdom = GameData.get_kingdom_with_relations(user_id)
@@ -192,7 +222,7 @@ async def _show_full_summary(query, user_id: int):
         await query.edit_message_text("❌ Error generating summary!")
 
 
-async def _show_army_chart(query, user_id: int):
+async def _show_army_chart_impl(query, user_id: int):
     """Show army composition pie chart"""
     try:
         kingdom = GameData.get_kingdom_with_relations(user_id)
@@ -246,7 +276,7 @@ async def _show_army_chart(query, user_id: int):
         await query.edit_message_text("❌ Error loading army stats!")
 
 
-async def _show_battle_stats(query, user_id: int):
+async def _show_battle_stats_impl(query, user_id: int):
     """Show battle statistics"""
     try:
         kingdom = GameData.get_kingdom_with_relations(user_id)
@@ -291,7 +321,7 @@ async def _show_battle_stats(query, user_id: int):
         await query.edit_message_text("❌ Error loading battle stats!")
 
 
-async def _show_building_stats(query, user_id: int):
+async def _show_building_stats_impl(query, user_id: int):
     """Show building statistics"""
     try:
         kingdom = GameData.get_kingdom_with_relations(user_id)
@@ -343,7 +373,7 @@ async def _show_building_stats(query, user_id: int):
         await query.edit_message_text("❌ Error loading building stats!")
 
 
-async def _show_resource_stats(query, user_id: int):
+async def _show_resource_stats_impl(query, user_id: int):
     """Show resource statistics"""
     try:
         kingdom = GameData.get_kingdom_with_relations(user_id)

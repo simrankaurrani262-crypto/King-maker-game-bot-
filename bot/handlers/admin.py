@@ -1,25 +1,33 @@
+"""
+Admin Handler - Admin commands and controls.
+Fixed version with proper imports.
+"""
+
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
+
 from bot.models import get_db, User, Kingdom
 from bot.services.game_data import GameData
+from bot.utils.keyboards import back_dashboard_keyboard
 
 
 async def handler_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle admin commands"""
     user_id = update.effective_user.id
-    
+
     # Check admin status
     from bot.config import config
     if user_id != config.ADMIN_TELEGRAM_ID:
         await update.message.reply_text("⛔ Admin access only!")
         return
-    
+
     if not context.args:
         await show_admin_help(update, context)
         return
-    
+
     command = context.args[0].lower()
-    
+
     if command == "stats":
         await admin_stats(update, context)
     elif command == "broadcast":
@@ -50,8 +58,8 @@ async def show_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 `/admin unban @user` — Unban user
 `/admin give @user <gold|gems|food> <amount>` — Give resources
 `/admin maintenance <on|off>` — Toggle maintenance"""
-    
-    await update.message.reply_text(text)
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -61,9 +69,9 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_kingdoms = db.query(Kingdom).count()
         banned_users = db.query(User).filter(User.is_banned == True).count()
         active_today = db.query(User).filter(
-            User.last_active > __import__('datetime').datetime.utcnow() - __import__('datetime').timedelta(days=1)
+            User.last_active > datetime.utcnow() - timedelta(days=1)
         ).count()
-    
+
     text = f"""📊 **BOT STATISTICS**
 ━━━━━━━━━━━━━━
 
@@ -71,139 +79,143 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🏰 Total Kingdoms: {total_kingdoms}
 🟢 Active Today: {active_today}
 ⛔ Banned: {banned_users}"""
-    
-    await update.message.reply_text(text)
+
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
 async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Broadcast message to all users"""
     if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: `/admin broadcast <message>`")
+        await update.message.reply_text("❌ Usage: `/admin broadcast <message>`", parse_mode="Markdown")
         return
-    
+
     message = " ".join(context.args[1:])
-    
+
     with get_db() as db:
         users = db.query(User).filter(User.is_banned == False).all()
-    
+
     sent = 0
     failed = 0
     for user in users:
         try:
             await context.bot.send_message(
                 chat_id=user.telegram_id,
-                text=f"📢 **ANNOUNCEMENT**\n\n{message}"
+                text=f"📢 **ANNOUNCEMENT**\n\n{message}",
+                parse_mode="Markdown"
             )
             sent += 1
         except Exception:
             failed += 1
-    
+
     await update.message.reply_text(f"✅ Sent: {sent}\n❌ Failed: {failed}")
 
 
 async def admin_warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Warn a user"""
     if len(context.args) < 3:
-        await update.message.reply_text("❌ Usage: `/admin warn @user <reason>`")
+        await update.message.reply_text("❌ Usage: `/admin warn @user <reason>`", parse_mode="Markdown")
         return
-    
+
     username = context.args[1].replace("@", "")
     reason = " ".join(context.args[2:])
-    
+
     with get_db() as db:
         user = db.query(User).filter(User.username == username).first()
         if not user:
             await update.message.reply_text("❌ User nahi mila!")
             return
-        
-        user.warning_count += 1
+
+        user.warning_count = getattr(user, 'warning_count', 0) + 1
         db.commit()
-    
+
     try:
         await context.bot.send_message(
             chat_id=user.telegram_id,
-            text=f"⚠️ **WARNING #{user.warning_count}**\nReason: {reason}\n\n3 warnings = temporary ban!"
+            text=f"⚠️ **WARNING #{user.warning_count}**\nReason: {reason}\n\n3 warnings = temporary ban!",
+            parse_mode="Markdown"
         )
     except Exception:
         pass
-    
+
     await update.message.reply_text(f"⚠️ {username} ko warning #{user.warning_count} di gayi!")
 
 
 async def admin_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ban a user"""
     if len(context.args) < 4:
-        await update.message.reply_text("❌ Usage: `/admin ban @user <days> <reason>`")
+        await update.message.reply_text("❌ Usage: `/admin ban @user <days> <reason>`", parse_mode="Markdown")
         return
-    
+
     username = context.args[1].replace("@", "")
     try:
         days = int(context.args[2])
     except ValueError:
         await update.message.reply_text("❌ Valid days enter karo!")
         return
-    
+
     reason = " ".join(context.args[3:])
-    
+
     with get_db() as db:
         user = db.query(User).filter(User.username == username).first()
         if not user:
             await update.message.reply_text("❌ User nahi mila!")
             return
-        
+
         user.is_banned = True
         user.ban_reason = reason
-        user.ban_expires = __import__('datetime').datetime.utcnow() + __import__('datetime').timedelta(days=days)
+        user.ban_expires = datetime.utcnow() + timedelta(days=days)
         db.commit()
-    
+
     try:
         await context.bot.send_message(
             chat_id=user.telegram_id,
-            text=f"⛔ **BANNED**\nReason: {reason}\nDuration: {days} days"
+            text=f"⛔ **BANNED**\nReason: {reason}\nDuration: {days} days",
+            parse_mode="Markdown"
         )
     except Exception:
         pass
-    
+
     await update.message.reply_text(f"⛔ {username} {days} din ke liye banned!")
 
 
 async def admin_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Unban a user"""
     if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: `/admin unban @user`")
+        await update.message.reply_text("❌ Usage: `/admin unban @user`", parse_mode="Markdown")
         return
-    
+
     username = context.args[1].replace("@", "")
-    
+
     with get_db() as db:
         user = db.query(User).filter(User.username == username).first()
         if not user:
             await update.message.reply_text("❌ User nahi mila!")
             return
-        
+
         user.is_banned = False
         user.ban_reason = None
         user.ban_expires = None
         user.warning_count = 0
         db.commit()
-    
+
     try:
         await context.bot.send_message(
             chat_id=user.telegram_id,
-            text="✅ **UNBANNED**\nAapka ban khatam ho gaya hai!"
+            text="✅ **UNBANNED**\nAapka ban khatam ho gaya hai!",
+            parse_mode="Markdown"
         )
     except Exception:
         pass
-    
+
     await update.message.reply_text(f"✅ {username} unbanned!")
 
 
 async def admin_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Give resources to a user"""
     if len(context.args) < 4:
-        await update.message.reply_text("❌ Usage: `/admin give @user <gold|gems|food> <amount>`")
+        await update.message.reply_text("❌ Usage: `/admin give @user <gold|gems|food> <amount>`", parse_mode="Markdown")
         return
-    
+
     username = context.args[1].replace("@", "")
     resource = context.args[2].lower()
     try:
@@ -211,18 +223,18 @@ async def admin_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Valid amount enter karo!")
         return
-    
+
     with get_db() as db:
         user = db.query(User).filter(User.username == username).first()
         if not user:
             await update.message.reply_text("❌ User nahi mila!")
             return
-        
+
         kingdom = db.query(Kingdom).filter(Kingdom.user_id == user.telegram_id).first()
         if not kingdom:
             await update.message.reply_text("❌ User ka kingdom nahi mila!")
             return
-        
+
         if resource == "gold":
             kingdom.gold += amount
         elif resource == "gems":
@@ -232,24 +244,25 @@ async def admin_give(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("❌ Resource: gold/gems/food")
             return
-        
+
         db.commit()
-    
+
     try:
         await context.bot.send_message(
             chat_id=user.telegram_id,
-            text=f"🎁 **Admin Gift!**\n💰 +{amount:,} {resource.title()}!"
+            text=f"🎁 **Admin Gift!**\n💰 +{amount:,} {resource.title()}!",
+            parse_mode="Markdown"
         )
     except Exception:
         pass
-    
+
     await update.message.reply_text(f"✅ {username} ko {amount:,} {resource} diya!")
 
 
 async def admin_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle maintenance mode"""
     if len(context.args) < 2:
-        await update.message.reply_text("❌ Usage: `/admin maintenance <on|off>`")
+        await update.message.reply_text("❌ Usage: `/admin maintenance <on|off>`", parse_mode="Markdown")
         return
 
     state = context.args[1].lower()
@@ -257,10 +270,10 @@ async def admin_maintenance(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if state == "on":
         config.MAINTENANCE_MODE = True
-        await update.message.reply_text("🔧 Maintenance mode **ON**")
+        await update.message.reply_text("🔧 Maintenance mode **ON**", parse_mode="Markdown")
     else:
         config.MAINTENANCE_MODE = False
-        await update.message.reply_text("✅ Maintenance mode **OFF**")
+        await update.message.reply_text("✅ Maintenance mode **OFF**", parse_mode="Markdown")
 
 
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -283,13 +296,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "admin_broadcast":
         await query.edit_message_text(
             "📢 Send broadcast message using:\n`/admin broadcast <message>`",
-            reply_markup=back_dashboard_keyboard()
+            reply_markup=back_dashboard_keyboard(),
+            parse_mode="Markdown"
         )
 
     elif data == "admin_maintenance":
         await query.edit_message_text(
             "🔧 Toggle maintenance:\n`/admin maintenance <on|off>`",
-            reply_markup=back_dashboard_keyboard()
+            reply_markup=back_dashboard_keyboard(),
+            parse_mode="Markdown"
         )
 
 
@@ -312,9 +327,4 @@ async def _admin_stats_callback(query):
         f"⛔ Banned: {banned_users}"
     )
 
-    await query.edit_message_text(text, reply_markup=back_dashboard_keyboard())
-
-
-# Import at bottom to avoid circular issues
-from bot.utils.keyboards import back_dashboard_keyboard
-from bot.models import get_db, User, Kingdom
+    await query.edit_message_text(text, reply_markup=back_dashboard_keyboard(), parse_mode="Markdown")
